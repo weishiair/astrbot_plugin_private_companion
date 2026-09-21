@@ -281,11 +281,45 @@ def initialize_plugin_config(self: Any, config: Any) -> None:
     _initialize_photo_and_expression_config(self, c)
     _initialize_review_and_group_config(self, c)
     _initialize_group_and_provider_config(self, c)
+    _initialize_jev_config(self, c)
     self.enable_p4_b_legacy_score_isolation = self._cfg_bool(
         c,
         "enable_p4_b_legacy_score_isolation",
         False,
     )
+
+
+def _initialize_jev_config(self: Any, c: Any) -> None:
+    """Load TypeSafe Jev / System One delegation settings.
+
+    These must land as runtime attributes: the JEV call sites resolve settings
+    through ``_persona_value``/``persona_setting``, which read instance
+    attributes rather than the config mapping. The first integration shipped
+    without this loader, so ``jev_api_key`` always resolved to "" and the whole
+    feature was inert no matter how it was configured.
+    """
+    self.enable_jev_decision = self._cfg_bool(c, "enable_jev_decision", False)
+    self.jev_api_key = self._cfg_str(c, "jev_api_key", "")
+    # auto → 按 Key 前缀推断端点族；显式取值用于 Key 与端点不匹配时的手工纠正。
+    kind = self._cfg_str(c, "jev_endpoint_kind", "auto").strip().lower()
+    self.jev_endpoint_kind = kind if kind in {"auto", "typesafe", "vercel", "custom"} else "auto"
+    self.jev_gateway_url = self._cfg_str(c, "jev_gateway_url", "")
+    self.jev_model = self._cfg_str(c, "jev_model", "")
+    self.jev_timeout_seconds = self._cfg_float(c, "jev_timeout_seconds", 1.6, 0.15)
+    self.jev_max_concurrency = self._cfg_int(c, "jev_max_concurrency", 4, 1, 32)
+    self.jev_enabled_tasks = self._parse_text_list_config(
+        self._cfg_raw(c, "jev_enabled_tasks", [])
+    )
+    self.jev_threshold_overrides = self._cfg_str(c, "jev_threshold_overrides", "")
+    self.jev_fail_threshold = self._cfg_int(c, "jev_fail_threshold", 3, 1, 50)
+    self.jev_fail_open_seconds = self._cfg_float(c, "jev_fail_open_seconds", 90.0, 1.0)
+    self.jev_count_toward_token_limit = self._cfg_bool(c, "jev_count_toward_token_limit", True)
+    reloader = getattr(self, "_jev_reload", None)
+    if callable(reloader):
+        try:
+            reloader()
+        except Exception:
+            pass
 
 def _initialize_core_and_relationship_config(self: Any, c: Any) -> None:
     self.data_dir = StarTools.get_data_dir(PLUGIN_NAME)

@@ -402,6 +402,7 @@ from .content_companion_bridge import ContentCompanionBridgeMixin
 from .external_bridge_resolver import invalidate_external_bridge_cache
 from .proactive import ProactiveMixin
 from .group_wakeup import GroupWakeupMixin
+from .jev_decision import JevDecisionMixin
 from .group_observation import GroupObservationMixin
 from .group_cycle_boundary import (
     build_group_cycle_boundary,
@@ -1782,6 +1783,7 @@ class PrivateCompanionPlugin(
     TtsToolSanitizerMixin,
     RealityCompanionBridgeMixin,
     GroupWakeupMixin,
+    JevDecisionMixin,
     GroupObservationMixin,
     GroupMemberSafetyMixin,
     EventDispatchMixin,
@@ -8810,6 +8812,14 @@ class PrivateCompanionPlugin(
         global _private_companion_plugin
         await close_early_resources(self)
         await self._cancel_lifecycle_background_tasks()
+        # Release the pooled JEV connection; without this a plugin reload would
+        # leave the aiohttp session (and its socket) behind.
+        close_jev = getattr(self, "aclose_jev", None)
+        if callable(close_jev):
+            try:
+                await close_jev()
+            except Exception as exc:
+                logger.debug("关闭 JEV 连接失败: %s", _single_line(exc, 120))
         invalidate_bridge = getattr(self, "_memory_companion_invalidate_bridge_cache", None)
         if callable(invalidate_bridge):
             invalidate_bridge()

@@ -796,28 +796,88 @@
         "default": "23:00-08:30"
       },
       "enable_jev_decision": {
-        "description": "启用 Jev System One 毫秒级决策引擎",
+        "description": "启用 Jev System One 快速判定引擎",
         "type": "bool",
-        "hint": "默认关闭。开启后，群聊唤醒、插话判断及意图判定将通过 TypeSafe Jev（Vercel AI Gateway）进行非自回归的快速概率决策，延迟约 100-300ms，显著降低 LLM 消耗并避免误触发。",
+        "hint": "默认关闭。开启后，续接判断、沉默闸门、智能沉默、插话判断等纯判断类任务改由 TypeSafe Jev 以非自回归概率方式完成，不再消耗小模型调用。实测复用连接后单次约 0.25-0.31s。需要 JEV 不可用时自动回落到原模型。",
         "default": false
       },
       "jev_api_key": {
-        "description": "Jev / Vercel API Key",
+        "description": "JEV API Key",
         "type": "string",
-        "hint": "填入 Vercel AI Gateway Key（vck_...）或 TypeSafe 官方 API Key。",
+        "hint": "TypeSafe 官方 Key（apikey_...）或 Vercel AI Gateway Key（vck_...）。端点族为 auto 时会按 Key 前缀自动选择对应端点，因此通常只需填这一项。",
         "default": ""
       },
+      "jev_endpoint_kind": {
+        "description": "JEV 端点族",
+        "type": "select",
+        "options": [
+          "auto",
+          "typesafe",
+          "vercel",
+          "custom"
+        ],
+        "labels": [
+          "自动识别（按 Key 前缀）",
+          "TypeSafe 官方直连",
+          "Vercel AI Gateway",
+          "自定义网关"
+        ],
+        "hint": "auto 时按 Key 前缀判断：apikey_ 前缀走 https://api.typesafe.ai/v1/systemone，vck_ 前缀走 Vercel 网关，两者协议相同只是主机与模型命名空间不同。Key 与端点不匹配时可在排障里看到明确提示。",
+        "default": "auto"
+      },
       "jev_gateway_url": {
-        "description": "Jev 网关 API 端点",
+        "description": "JEV 网关地址（留空自动）",
         "type": "string",
-        "hint": "默认使用 Vercel AI Gateway: https://ai-gateway.vercel.sh/typesafe/v1/systemone",
-        "default": "https://ai-gateway.vercel.sh/typesafe/v1/systemone"
+        "hint": "留空即按端点族自动选择。仅在自建镜像或网关代理时需要填写。注意默认值必须为空，否则会覆盖自动识别结果。",
+        "default": ""
       },
       "jev_model": {
-        "description": "Jev 模型名称",
+        "description": "JEV 模型名称（留空自动）",
         "type": "string",
-        "hint": "默认使用 typesafe-ai/jev",
-        "default": "typesafe-ai/jev"
+        "hint": "留空即按端点族自动选择：TypeSafe 官方用 jev-latest，Vercel 网关用 typesafe-ai/jev。两个端点不通用模型名。",
+        "default": ""
+      },
+      "jev_timeout_seconds": {
+        "description": "JEV 单次判定超时（秒）",
+        "type": "float",
+        "hint": "默认 1.6。超时即回落到原模型，不会阻断回复。实测单次约 0.28s，但同城网络抖动可达 1s，不建议低于 1.0。",
+        "default": 1.6
+      },
+      "jev_max_concurrency": {
+        "description": "JEV 并发上限",
+        "type": "int",
+        "hint": "默认 4。同时判定的消息过多时限流，避免上游变慢导致集体超时。",
+        "default": 4
+      },
+      "jev_enabled_tasks": {
+        "description": "交给 JEV 的判定任务",
+        "type": "list",
+        "hint": "留空使用默认集合。可选值：group_followup_judge（续接判断）、group_air_reply_guard（沉默闸门）、smart_silence（智能沉默）、group_interject（插话判断）、group_member_safety（群成员风控）、rest_wakeup_judge（休息醒来）、group_wakeup_context（线索词唤醒，注意这条路径原本不花钱）、smart_message_debounce（智能收口）、proactive_persona_judge（主动人格）、emotion_judgement（情绪判断）。",
+        "default": []
+      },
+      "jev_threshold_overrides": {
+        "description": "JEV 阈值覆盖（JSON）",
+        "type": "string",
+        "hint": "留空使用各任务默认阈值。格式如 {\"smart_silence\":0.7,\"group_interject\":0.55}，取值需在 0 到 1 之间。",
+        "default": ""
+      },
+      "jev_fail_threshold": {
+        "description": "熔断触发连续失败次数",
+        "type": "int",
+        "hint": "默认 3。连续失败达到该次数后暂停调用一段时间，避免 JEV 故障时每条消息都白等一个超时。",
+        "default": 3
+      },
+      "jev_fail_open_seconds": {
+        "description": "熔断持续时间（秒）",
+        "type": "float",
+        "hint": "默认 90。熔断期间所有判定直接回落到原模型，不再尝试 JEV。",
+        "default": 90.0
+      },
+      "jev_count_toward_token_limit": {
+        "description": "JEV 消耗计入日 Token 限额",
+        "type": "bool",
+        "hint": "默认开启。开启后 JEV 的 Token 用量会进入 Token 页并在达到日硬限额时一并停止，避免绕过限额产生费用。",
+        "default": true
       }
     }
   },

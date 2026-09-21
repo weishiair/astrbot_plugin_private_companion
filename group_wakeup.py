@@ -484,24 +484,23 @@ class GroupWakeupMixin:
         sender_name: str,
         text: str,
         matched_word: str,
+        jev_verdict: bool | None = None,
     ) -> bool:
+        """Decide whether a context-word hit really addresses the bot.
+
+        ``jev_verdict`` is resolved by the async caller before entering this
+        synchronous scoring path. The earlier integration called JEV from here
+        with a blocking ``urllib`` request, which froze the event loop for a
+        full round trip on every group message; keeping this function sync and
+        passing the verdict in avoids that without making the whole wakeup chain
+        async.
+        """
         cleaned = _single_line(text, 260)
         if not cleaned:
             return False
 
-        # Jev System One Decision Engine Integration
-        try:
-            from .domains.decision import JevDecisionEngine
-            jev_key = str(_persona_value(self, "jev_api_key", "") or "").strip()
-            jev_enabled = bool(_persona_value(self, "enable_jev_decision", False))
-            if jev_enabled and jev_key:
-                engine = JevDecisionEngine(api_key=jev_key)
-                bot_name = str(_persona_value(self, "bot_name", "和泉纱雾") or "和泉纱雾")
-                jev_decision = engine.should_group_reply(cleaned, bot_name=bot_name, scene=scene)
-                if jev_decision is not None:
-                    return jev_decision
-        except Exception:
-            pass
+        if jev_verdict is not None:
+            return bool(jev_verdict)
 
         if re.search(r"(别回|不要回|不用回|不是叫你|不是问你|别理|不要理)", cleaned):
             return False
@@ -1143,6 +1142,7 @@ class GroupWakeupMixin:
         sender_name: str,
         text: str,
         group_id: str = "",
+        jev_context_verdict: bool | None = None,
     ) -> dict[str, Any]:
         if not _persona_value(self, "enable_group_wakeup_enhancement", False):
             return {}
@@ -1274,7 +1274,16 @@ class GroupWakeupMixin:
                     note="命中了可唤醒线索,但仍在冷却时间内,所以没有接入回复链。",
                 )
             return {}
-        for word in _persona_value(self, "group_wakeup_context_words", []) or []:
+        context_words = _persona_value(self, "group_wakeup_context_words", []) or []
+        first_context_word = next(
+            (
+                str(word)
+                for word in context_words
+                if word and self._text_contains_wakeup_word(cleaned, word)
+            ),
+            None,
+        )
+        for word in context_words:
             if not self._text_contains_wakeup_word(cleaned, word):
                 continue
             if self._group_wakeup_context_should_reply(
@@ -1284,6 +1293,9 @@ class GroupWakeupMixin:
                 sender_name=sender_name,
                 text=cleaned,
                 matched_word=word,
+                # 只有第一个命中词使用预判结果：JEV 的判定针对整条消息，
+                # 而每个词都重算一遍只会重复同一问题。
+                jev_verdict=jev_context_verdict if word == first_context_word else None,
             ):
                 strength = self._group_wakeup_strength("context_word", group, scene)
                 return {
