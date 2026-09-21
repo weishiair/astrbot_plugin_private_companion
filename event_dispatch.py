@@ -4882,6 +4882,28 @@ class EventDispatchMixin:
         should_judge = current_polite or len(recent_bot) >= max(1, max_replies - 1)
         if not should_judge:
             return {"block": False, "reason": "low_risk"}
+        flow_formatter = getattr(self, "_format_group_recent_flow_for_review", None)
+        recent_flow = flow_formatter(group, sender_id=sender_id, text=text, max_lines=12, max_chars=1200) if callable(flow_formatter) else ""
+        recent_bot_lines = "\n".join(
+            f"- {self._format_ts_for_display(_safe_float(item.get('ts'), 0)) if hasattr(self, '_format_ts_for_display') else int(_safe_float(item.get('ts'), 0))}: {_single_line(item.get('text'), 120)}"
+            for item in recent_bot[-6:]
+        ) or "（无）"
+
+        jev_verdict = await self._group_air_guard_jev_verdict(
+            sender_name=sender_name,
+            text=text,
+            recent_bot_lines=recent_bot_lines,
+            recent_flow=recent_flow,
+            recent_bot_count=len(recent_bot),
+            current_polite=current_polite,
+        )
+        if jev_verdict is not None:
+            return {
+                "block": jev_verdict,
+                "reason": "air_judge_jev",
+                "answer": f"jev={jev_verdict}",
+            }
+
         provider_id = self._task_provider(
             _persona_value(self, "group_followup_judge_provider_id", ""),
             _persona_value(self, "response_review_provider_id", ""),
@@ -4889,12 +4911,6 @@ class EventDispatchMixin:
         )
         if not provider_id:
             return {"block": False, "reason": "no_provider"}
-        flow_formatter = getattr(self, "_format_group_recent_flow_for_review", None)
-        recent_flow = flow_formatter(group, sender_id=sender_id, text=text, max_lines=12, max_chars=1200) if callable(flow_formatter) else ""
-        recent_bot_lines = "\n".join(
-            f"- {self._format_ts_for_display(_safe_float(item.get('ts'), 0)) if hasattr(self, '_format_ts_for_display') else int(_safe_float(item.get('ts'), 0))}: {_single_line(item.get('text'), 120)}"
-            for item in recent_bot[-6:]
-        ) or "（无）"
         prompt = render_prompt_sections(
             [self._group_air_reply_guard_prompt_section(
                 sender_id=sender_id,
@@ -4917,6 +4933,43 @@ class EventDispatchMixin:
             return {"block": True, "reason": "air_judge", "answer": answer[:40]}
         return {"block": False, "reason": "air_judge_reply", "answer": answer[:40]}
 
+    async def _group_air_guard_jev_verdict(
+        self,
+        *,
+        sender_name: str,
+        text: str,
+        recent_bot_lines: str,
+        recent_flow: str,
+        recent_bot_count: int,
+        current_polite: bool,
+    ) -> bool | None:
+        """Ask JEV whether the bot should stay silent this round.
+
+        Only the state the original prompt relied on is projected, so the
+        probability model sees the same evidence the 8-token LLM call did.
+        """
+        judge = getattr(self, "_jev_noul", None)
+        if not callable(judge):
+            return None
+        state = (
+            f"群聊场景：Bot 刚刚连续回复了 {recent_bot_count} 次，现在{sender_name}又说了一句。\n"
+            f"对方最新发言：{_single_line(text, 300)}\n"
+            f"Bot 最近的发言：\n{recent_bot_lines}\n"
+            f"最近群聊流向：\n{recent_flow or '（无）'}\n"
+            f"对方这句是否属于礼貌性的收尾用语：{'是' if current_polite else '否'}"
+        )
+        try:
+            return await judge(
+                task="group_air_reply_guard",
+                state=state,
+                instructions="Bot 此刻是否应该保持沉默、不再继续回复，以免变成自问自答的刷屏？",
+                true_hint="应当保持沉默：对话已经可以自然收尾，或 Bot 再回会显得聒噪",
+                false_hint="应当继续回复：对方仍在等 Bot 的实质回应",
+            )
+        except Exception as exc:
+            logger.debug("JEV 读空气判断失败，回落到模型: %s", _single_line(exc, 120))
+            return None
+
     async def _group_followup_llm_judge(
         self,
         group: dict[str, Any],
@@ -4927,15 +4980,27 @@ class EventDispatchMixin:
         active: dict[str, Any],
         scene: dict[str, Any],
     ) -> bool | None:
-        provider_id = self._task_provider(_persona_value(self, "group_followup_judge_provider_id", ""))
-        if not provider_id:
-            return None
         flow_formatter = getattr(self, "_format_group_recent_flow_for_review", None)
         recent_flow = (
             flow_formatter(group, sender_id=sender_id, text=text, max_lines=10, max_chars=1200)
             if callable(flow_formatter)
             else ""
         )
+        active_reason = _single_line(active.get("reason"), 120) if isinstance(active, dict) else ""
+        active_rounds = _safe_int(active.get("rounds"), 0) if isinstance(active, dict) else 0
+        jev_verdict = await self._group_followup_jev_verdict(
+            sender_name=sender_name,
+            text=text,
+            active_rounds=active_rounds,
+            active_reason=active_reason,
+            recent_flow=recent_flow,
+        )
+        if jev_verdict is not None:
+            return jev_verdict
+
+        provider_id = self._task_provider(_persona_value(self, "group_followup_judge_provider_id", ""))
+        if not provider_id:
+            return None
         prompt = render_prompt_sections(
             [self._group_followup_judge_prompt_section(
                 sender_id=sender_id,
@@ -4959,6 +5024,42 @@ class EventDispatchMixin:
         if answer.startswith("NO") or answer.startswith("否"):
             return False
         return None
+
+    async def _group_followup_jev_verdict(
+        self,
+        *,
+        sender_name: str,
+        text: str,
+        active_rounds: int,
+        active_reason: str,
+        recent_flow: str,
+    ) -> bool | None:
+        """Ask JEV whether the follow-up still addresses the bot.
+
+        Runs before the provider check so a group with no judge provider
+        configured still benefits: the original code returned ``None`` (rule
+        fallback) whenever no model was set, which is the common setup.
+        """
+        judge = getattr(self, "_jev_noul", None)
+        if not callable(judge):
+            return None
+        state = (
+            f"群聊场景：Bot 之前被叫住，已经连续接话 {active_rounds} 轮"
+            f"（进入接话的原因：{active_reason or '未记录'}）。\n"
+            f"现在{sender_name}在未 @Bot 的情况下又说了一句：{_single_line(text, 300)}\n"
+            f"最近群聊流向：\n{recent_flow or '（无）'}"
+        )
+        try:
+            return await judge(
+                task="group_followup_judge",
+                state=state,
+                instructions="这句没有 @ Bot 的后续发言，是否仍然在对 Bot 说话、需要 Bot 继续接下去？",
+                true_hint="仍然在对 Bot 说：延续之前的话题继续发问或回应 Bot",
+                false_hint="已经转向别人或转为群内闲聊，不再需要 Bot 接话",
+            )
+        except Exception as exc:
+            logger.debug("JEV 续接判断失败，回落到模型: %s", _single_line(exc, 120))
+            return None
 
     def _group_followup_judge_prompt_section(
         self,

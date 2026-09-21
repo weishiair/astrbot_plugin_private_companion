@@ -8021,6 +8021,34 @@ Character-specific bottom-line baseline (reference only; empty means use the con
                 ),
             ),
         )
+        jev_verdict = await self._smart_silence_jev_verdict(
+            trigger=trigger,
+            session_kind=session_kind,
+            inbound=inbound,
+            response=response,
+            recent_lines=recent_lines,
+            last_companion=last_companion,
+        )
+        if jev_verdict is not None:
+            started = time.perf_counter()
+            result = {
+                "decision": "silent" if jev_verdict else "send",
+                "reason": "jev",
+                "confidence": 1.0,
+                "source": "jev",
+                "trigger": trigger,
+                "elapsed_ms": int((time.perf_counter() - started) * 1000),
+            }
+            cache[cache_key] = {"ts": now, "result": result}
+            logger.info(
+                "智能沉默判定(JEV): decision=%s trigger=%s user=%s reply=%s",
+                result["decision"],
+                trigger,
+                _single_line(inbound, 120),
+                _single_line(response, 140),
+            )
+            return result
+
         started = time.perf_counter()
         raw = ""
         timeout_getter = getattr(self, "_model_timeout_seconds_for_call", None)
@@ -8101,6 +8129,44 @@ Character-specific bottom-line baseline (reference only; empty means use the con
             _single_line(response, 140),
         )
         return result
+
+    async def _smart_silence_jev_verdict(
+        self,
+        *,
+        trigger: str,
+        session_kind: str,
+        inbound: str,
+        response: str,
+        recent_lines: list[str],
+        last_companion: str,
+    ) -> bool | None:
+        """Ask JEV whether this reply should be swallowed.
+
+        Returns ``None`` when JEV is off or unsure, which sends the caller down
+        its original model path unchanged.
+        """
+        judge = getattr(self, "_jev_noul", None)
+        if not callable(judge):
+            return None
+        state = (
+            f"会话类型：{_single_line(session_kind, 40) or '未知'}\n"
+            f"触发词：{_single_line(trigger, 60) or '无'}\n"
+            f"最近上下文：\n" + ("\n".join(recent_lines) or "（无）") + "\n"
+            f"Bot 上次发出的话：{_single_line(last_companion, 200) or '（无）'}\n"
+            f"用户刚才说：{_single_line(inbound, 300)}\n"
+            f"待发送的回复：{_single_line(response, 400)}"
+        )
+        try:
+            return await judge(
+                task="smart_silence",
+                state=state,
+                instructions="用户是否在表示不要继续这个话题、先别回复，而且这条待发送的回复应当直接不发？",
+                true_hint="应当沉默不发：用户已收尾、要离开或明确不想继续，而这条回复仍在追问、解释或延长话题",
+                false_hint="应当照常发送：这是必要的信息回答、用户明确提问的答案、工具结果、约定确认或安全提醒",
+            )
+        except Exception as exc:
+            logger.debug("JEV 智能沉默判定失败，回落到模型: %s", _single_line(exc, 120))
+            return None
 
     @staticmethod
     def _looks_like_private_fact_correction(text: Any) -> bool:
