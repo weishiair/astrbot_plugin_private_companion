@@ -435,6 +435,74 @@ class TestGatePolicy:
         assert gate.stats()["totals"]["low_confidence"] == 1
         assert gate.stats()["totals"]["fallback_to_llm"] == 1
 
+    def test_audit_reason_names_the_threshold_and_floor(self):
+        """The audit must not read as self-contradictory.
+
+        ``decision`` records what JEV answered while ``reason`` explains why the
+        gate overrode it; earlier the reason was the bare phrase 低置信度回落,
+        which next to ``decision=silent`` looked like a logging bug.
+        """
+        gate = JevGate(
+            client=_FakeClient([_noul_result(0.52)]),
+            master_enabled=True,
+            enabled_tasks=[TASK_GROUP_FOLLOWUP],
+        )
+        _run(gate.decide_noul(task=TASK_GROUP_FOLLOWUP, state="x", instructions="y"))
+        entry = gate.recent_audit(1)[0]
+        assert entry["fallback"] == "llm"
+        assert "低于置信度下限" in entry["reason"]
+        assert "0.52" in entry["reason"]
+
+    def test_answer_clearing_threshold_but_not_floor_still_falls_back(self):
+        """0.55 clears the default threshold; a stricter floor must still defer.
+
+        This is the band that produced the confusing audit entry.
+        """
+        gate = JevGate(
+            client=_FakeClient([_noul_result(0.58)]),
+            master_enabled=True,
+            enabled_tasks=[TASK_SMART_SILENCE],
+        )
+        assert _run(gate.decide_noul(task=TASK_SMART_SILENCE, state="x", instructions="y")) is None
+        entry = gate.recent_audit(1)[0]
+        assert entry["decision"] == "reply"
+        assert entry["fallback"] == "llm"
+
+    def test_acceptance_above_floor_has_no_fallback_marker(self):
+        gate = JevGate(
+            client=_FakeClient([_noul_result(0.95)]),
+            master_enabled=True,
+            enabled_tasks=[TASK_SMART_SILENCE],
+        )
+        assert _run(gate.decide_noul(task=TASK_SMART_SILENCE, state="x", instructions="y")) is True
+        entry = gate.recent_audit(1)[0]
+        assert entry["reason"] == ""
+        assert "fallback" not in entry
+
+    def test_choice_audit_names_the_confidence(self):
+        gate = JevGate(
+            client=_FakeClient([_choice_result("ask_bot", confidence=0.1)]),
+            master_enabled=True,
+            enabled_tasks=[TASK_REST_WAKEUP],
+        )
+        assert _run(gate.decide_choice(
+            task=TASK_REST_WAKEUP, state="s", instructions="i", criteria={"ask_bot": "a"}
+        )) is None
+        entry = gate.recent_audit(1)[0]
+        assert "0.1" in entry["reason"]
+
+    def test_score_audit_names_the_confidence(self):
+        gate = JevGate(
+            client=_FakeClient([_score_result(0.9, confidence=0.05)]),
+            master_enabled=True,
+            enabled_tasks=[TASK_REST_WAKEUP],
+        )
+        assert _run(gate.decide_score(
+            task=TASK_REST_WAKEUP, state="s", instructions="i", low="l", high="h"
+        )) is None
+        entry = gate.recent_audit(1)[0]
+        assert "0.05" in entry["reason"]
+
     def test_threshold_override_is_applied(self):
         gate = JevGate(
             client=_FakeClient([_noul_result(0.6)]),
