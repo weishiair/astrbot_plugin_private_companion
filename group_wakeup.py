@@ -488,6 +488,21 @@ class GroupWakeupMixin:
         cleaned = _single_line(text, 260)
         if not cleaned:
             return False
+
+        # Jev System One Decision Engine Integration
+        try:
+            from .domains.decision import JevDecisionEngine
+            jev_key = str(_persona_value(self, "jev_api_key", "") or "").strip()
+            jev_enabled = bool(_persona_value(self, "enable_jev_decision", False))
+            if jev_enabled and jev_key:
+                engine = JevDecisionEngine(api_key=jev_key)
+                bot_name = str(_persona_value(self, "bot_name", "和泉纱雾") or "和泉纱雾")
+                jev_decision = engine.should_group_reply(cleaned, bot_name=bot_name, scene=scene)
+                if jev_decision is not None:
+                    return jev_decision
+        except Exception:
+            pass
+
         if re.search(r"(别回|不要回|不用回|不是叫你|不是问你|别理|不要理)", cleaned):
             return False
         if str(scene.get("talking_to") or "") not in {"group", "bot"}:
