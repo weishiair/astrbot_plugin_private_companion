@@ -313,9 +313,18 @@ class JevGate:
                 ts=time.time(),
                 task=task,
                 ok=True,
+                # ``decision`` records what JEV answered; ``accepted`` records
+                # whether the gate took it. They differ when the answer clears
+                # the threshold but not the confidence floor, and collapsing
+                # them made the audit read as "decision=reply, reason=低置信度"
+                # which looks self-contradictory when diagnosing.
                 decision="reply" if decision else "silent",
                 elapsed_ms=result.elapsed_ms,
-                reason="低置信度回落" if below_floor else "",
+                reason=(
+                    f"概率 {probability:.2f} 过阈值 {threshold:.2f}，但低于置信度下限 {floor:.2f}，回落原模型"
+                    if below_floor
+                    else ""
+                ),
                 threshold=threshold,
                 probability=probability,
                 confidence=confidence,
@@ -423,7 +432,12 @@ class JevGate:
                 ok=True,
                 decision=label,
                 elapsed_ms=result.elapsed_ms,
-                reason="低置信度回落" if below_floor else "",
+                reason=(
+                    f"标签 {label} 置信度 {confidence if confidence is not None else '缺失'}"
+                    f"低于下限 {floor:.2f}，回落原模型"
+                    if below_floor
+                    else ""
+                ),
                 confidence=confidence,
                 usage=result.usage,
                 fallback="llm" if below_floor else "",
@@ -511,7 +525,12 @@ class JevGate:
                 ok=True,
                 decision=f"score={score:.0f}",
                 elapsed_ms=result.elapsed_ms,
-                reason="低置信度回落" if below_floor else "",
+                reason=(
+                    f"打分置信度 {confidence if confidence is not None else '缺失'}"
+                    f"低于下限 {floor:.2f}，回落原模型"
+                    if below_floor
+                    else ""
+                ),
                 confidence=confidence,
                 usage=result.usage,
                 fallback="llm" if below_floor else "",
