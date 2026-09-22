@@ -165,6 +165,14 @@ class TestEndpointResolution:
         assert items["jev_gateway_url"]["default"] == ""
         assert items["jev_model"]["default"] == ""
         assert items["jev_endpoint_kind"]["default"] == "auto"
+        for key in (
+            "enable_jev_smart_message_debounce",
+            "enable_jev_rest_wakeup_judge",
+            "enable_jev_group_question_wakeup_reply_review",
+        ):
+            assert items[key]["type"] == "bool"
+            assert items[key]["default"] is False
+            assert items[key]["condition"] == "enable_jev_decision"
         assert schema["enable_jev_decision"]["invisible"] is True
         assert schema["jev_gateway_url"]["invisible"] is True
         assert schema["jev_gateway_url"]["default"] == ""
@@ -868,6 +876,32 @@ class TestPluginMixin:
         assert diagnostics["enabled_tasks"] == []
         assert diagnostics["configured_unwired_tasks"] == [TASK_GROUP_MEMBER_SAFETY]
 
+    def test_independent_switches_enable_opt_in_tasks(self):
+        host = _mixin_host(
+            enable_jev_decision=True,
+            jev_api_key="apikey_x",
+            jev_enabled_tasks=[],
+            enable_jev_smart_message_debounce=True,
+            enable_jev_rest_wakeup_judge=True,
+            enable_jev_group_question_wakeup_reply_review=True,
+        )
+        enabled = set(host._jev_settings()["enabled_tasks"])
+        assert set(DEFAULT_ENABLED_TASKS) <= enabled
+        assert {
+            TASK_SMART_DEBOUNCE,
+            TASK_REST_WAKEUP,
+            TASK_GROUP_QUESTION_REVIEW,
+        } <= enabled
+
+    def test_independent_switches_preserve_legacy_manual_task_list(self):
+        host = _mixin_host(
+            enable_jev_decision=True,
+            jev_api_key="apikey_x",
+            jev_enabled_tasks=[TASK_GROUP_QUESTION_REVIEW],
+            enable_jev_group_question_wakeup_reply_review=False,
+        )
+        assert host._jev_settings()["enabled_tasks"] == [TASK_GROUP_QUESTION_REVIEW]
+
     def test_disabled_mixin_returns_none_without_network(self):
         host = _mixin_host(enable_jev_decision=False, jev_api_key="apikey_x")
         result = _run(host._jev_noul(task=TASK_GROUP_FOLLOWUP, state="s", instructions="i"))
@@ -1184,12 +1218,18 @@ class TestWiringGuards:
         source = (ROOT / "plugin_bootstrap.py").read_text(encoding="utf-8")
         assert "self.jev_api_key" in source
         assert "self.enable_jev_decision" in source
+        assert "self.enable_jev_smart_message_debounce" in source
+        assert "self.enable_jev_rest_wakeup_judge" in source
+        assert "self.enable_jev_group_question_wakeup_reply_review" in source
         assert "self.jev_endpoint_kind" in source
         assert "_initialize_jev_config(self, c)" in source
 
     def test_page_hot_applies_jev_config_and_exposes_diagnostics(self):
         source = (ROOT / "page_api.py").read_text(encoding="utf-8")
         assert "JEV_RUNTIME_SETTING_KEYS" in source
+        assert '"enable_jev_smart_message_debounce"' in source
+        assert '"enable_jev_rest_wakeup_judge"' in source
+        assert '"enable_jev_group_question_wakeup_reply_review"' in source
         assert "reload_jev()" in source
         assert '"jev": section(' in source
 

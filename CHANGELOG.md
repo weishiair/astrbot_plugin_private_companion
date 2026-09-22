@@ -3,6 +3,7 @@
 ## 未发布
 
 ### Jev System One 判定委托
+- 为 `smart_message_debounce`、`rest_wakeup_judge` 和 `group_question_wakeup_reply_review` 增加三个独立布尔开关；普通用户无需再手填 `jev_enabled_tasks`，旧任务列表继续与开关取并集以保持兼容。
 - 接入默认关闭的 `group_question_wakeup_reply_review`：JEV 用 `noul` 完整接管群答疑回复的 `send/drop` 发送前复核；明确结论时省去 120-token 模型调用，`None`、异常、低置信度和熔断均回落原路径，且在未配置复核模型时仍可生效。
 - 新增 `docs/jev-optimization-opportunities.md` 开发指南：逐项登记已接线、候选、仅可前置过滤和不应迁移的判断场景，并给出任务注册、回退、影子校准、指标与测试要求。
 - 新增 JEV 热身/手动探针可观测性：总览现在显示 `warmup_attempted` 与脱敏的 `last_probe`，并提供显式 `POST /jev/probe` 连通性探针；探针复用在途热身、遵守 Token 日硬限额，用量以 `jev_manual_probe` 记账。
@@ -16,7 +17,7 @@
 - 修复事件循环迁移时复用旧 aiohttp session 的问题，并更正旧同步兼容接口“不会阻塞事件循环”的误导性说明。
 - 重写 JEV 客户端为异步实现并复用长连接：原实现用 `urllib` 同步直连，在群聊消息链路里每次判定都会阻塞事件循环一整个往返；改用 aiohttp 连接池后实测单次往返从 ~900ms 降到 ~0.26s，并新增连接预热避免首次建连（~1.8s）吃掉判定预算。
 - 同时支持 TypeSafe 官方直连与 Vercel AI Gateway：端点族默认 `auto`，按 API Key 前缀识别（`apikey_` 走官方、`vck_` 走网关），URL 与模型名各自按端点族取默认值，也可手工覆盖。Key 与端点族不匹配时给出可执行提示，不再静默失败。
-- 修复 JEV 集成从未生效的问题：调用点通过 `_persona_value` 读取实例属性，但启动配置从未加载 `jev_api_key`/`enable_jev_decision`，导致开关打开也无条件跳过；新增 `_initialize_jev_config` 统一加载 12 项设置。
+- 修复 JEV 集成从未生效的问题：调用点通过 `_persona_value` 读取实例属性，但启动配置从未加载 `jev_api_key`/`enable_jev_decision`，导致开关打开也无条件跳过；新增 `_initialize_jev_config` 统一加载 JEV 设置。
 - 修复 `jev_gateway_url`/`jev_model` 为死配置的问题：此前虽在 Schema 中声明但从未传入客户端；现由端点解析消费，默认值改为空串以免覆盖自动识别。
 - 判定任务改为显式委托：续接判断、群聊沉默闸门、智能沉默三个原本消耗小模型调用的判断改由 JEV 完成，命中阈值才采纳；不确定或不可用时返回 `None`，调用方回落原模型，行为不变。
 - 新增熔断与审计：连续失败达到阈值后暂停调用，避免 JEV 故障时每条消息都白等一个超时；每次尝试记录任务、概率、阈值、耗时与用量，面板可查端点、命中率与熔断状态。

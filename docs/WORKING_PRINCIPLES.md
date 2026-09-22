@@ -1818,7 +1818,7 @@ _ContentStoryModelBudget.max = 8
 
 延迟是能否用于低延迟判断的前提：每次新建连接 ~900ms，复用长连接 ~0.26s，冷启动建连 ~1.8s 故需启动预热。旧实现在 `async def handle_group_message` 链路内用 `urllib` 同步直连，每次判定冻结事件循环一整个往返，这是改为异步的直接原因。
 
-判定依据可放进 `state` 文本才可迁移，因此视觉判定不迁移；零成本的逻辑（线索词唤醒的正则、出站重复检查的哈希）也不迁移，交给 JEV 反而增加开销。Token 用量并入既有账本（`provider_id` 为 `jev:systemone`）。原理与运行契约详见 [Jev System One 判定委托](./jev-decision-delegation.md)，候选场景、优先级和灰度要求见 [JEV 优化机会清单](./jev-optimization-opportunities.md)。
+判定依据可放进 `state` 文本才可迁移，因此视觉判定不迁移；零成本的逻辑（线索词唤醒的正则、出站重复检查的哈希）也不迁移，交给 JEV 反而增加开销。Token 用量并入既有账本（`provider_id` 为 `jev:systemone`）。三个默认关闭的已接线任务各有独立布尔开关，`jev_enabled_tasks` 只保留为高级兼容入口。原理与运行契约详见 [Jev System One 判定委托](./jev-decision-delegation.md)，候选场景、优先级和灰度要求见 [JEV 优化机会清单](./jev-optimization-opportunities.md)。
 
 ---
 

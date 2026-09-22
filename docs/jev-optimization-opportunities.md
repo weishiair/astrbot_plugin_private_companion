@@ -77,6 +77,7 @@
 - 推荐原语：`noul`。
 - 推荐问题语义：`true = 应发送`，`false = 应拦截`。
 - 推荐初始配置：`default_enabled=False`，预算 1.6 秒，`min_confidence` 先取 0.60。
+- 用户开关：`enable_jev_group_question_wakeup_reply_review`；无需手工编辑任务名列表。
 
 这是最干净的完整接管场景，因为待发送回复已经由上游生成，本方法只决定是否放行；`reason` 仅用于日志，不参与业务计算。当前接入点位于 provider 检查之前，因此未配置复核模型时也能使用 JEV。
 
@@ -270,7 +271,7 @@ return await existing_judgement_and_generation_path()
 | 2 | P0 离线/小流量校准并建立每任务分歧统计 | 能区分 JEV、原模型、规则来源及两个方向的分歧 |
 | 3 | `qzone_comment_reply_prefilter` 影子评估 | 只评估明确 skip；不生成正文、不绕过隐私检查 |
 | 4 | `external_event_share_prefilter` 影子评估 | 本地强规则优先；JEV 只过滤明显无关信息 |
-| 5 | 复盘两个已接线默认关闭任务 | 用真实延迟和误判数据决定是否继续 opt-in |
+| 5 | 复盘三个已接线默认关闭任务 | 用真实延迟和误判数据决定是否继续 opt-in |
 | 6 | 再决定主动人格任务 | 没有足够影子样本前不启用生产决策 |
 
 当前不建议扩张 JEV 注册表来“占坑”。只有确定了输入、单一问题、回退路径、预算和校准方案后，才新增任务项。

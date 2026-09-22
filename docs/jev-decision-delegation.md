@@ -64,7 +64,7 @@ URL 与凭据属于不同端点族时，**以凭据为准并忽略该 URL**，�
 
 ## 5. 任务注册表与回落语义
 
-可委托的任务登记在 `JEV_TASKS`，每项声明原语、默认启停、运行时是否已接线、阈值、置信度下限与预算秒数。默认启用且已接线的四项是：`group_followup_judge`、`group_air_reply_guard`、`smart_silence`、`group_interject`。另外三项 `smart_message_debounce`、`rest_wakeup_judge` 与 `group_question_wakeup_reply_review` 已接线但默认关闭，需要明确加入 `jev_enabled_tasks` 才会运行。`jev_enabled_tasks` 留空（包括 Schema 下发的空列表）时使用四项默认值；非空但全是未知值时仍保持空集合，避免误开放委托面。
+可委托的任务登记在 `JEV_TASKS`，每项声明原语、默认启停、运行时是否已接线、阈值、置信度下限与预算秒数。默认启用且已接线的四项是：`group_followup_judge`、`group_air_reply_guard`、`smart_silence`、`group_interject`。另外三项 `smart_message_debounce`、`rest_wakeup_judge` 与 `group_question_wakeup_reply_review` 已接线但默认关闭，可分别通过独立布尔开关启用。`jev_enabled_tasks` 保留为高级兼容入口：留空时使用四项默认值，手工任务列表与独立开关取并集，非空但全是未知值时仍保持空集合。
 
 统一的回落契约是 **返回 `None` 表示"照原路径走"**：
 
@@ -118,7 +118,9 @@ Token 用量并入插件既有账本，`provider_id` 为 `jev:systemone`，受�
 
 ## 8. 配置项
 
-`basic_config` 章节下 12 项：`enable_jev_decision`（总开关，默认关）、`jev_api_key`、`jev_endpoint_kind`、`jev_gateway_url`（留空自动）、`jev_model`（留空自动）、`jev_timeout_seconds`、`jev_max_concurrency`、`jev_enabled_tasks`、`jev_threshold_overrides`、`jev_fail_threshold`、`jev_fail_open_seconds`、`jev_count_toward_token_limit`。
+`basic_config` 章节下 15 项：`enable_jev_decision`（总开关，默认关）、`jev_api_key`、`jev_endpoint_kind`、`jev_gateway_url`（留空自动）、`jev_model`（留空自动）、`jev_timeout_seconds`、`jev_max_concurrency`、`jev_enabled_tasks`（高级兼容入口）、三个默认关闭任务的独立开关、`jev_threshold_overrides`、`jev_fail_threshold`、`jev_fail_open_seconds`、`jev_count_toward_token_limit`。
+
+三个独立开关分别为 `enable_jev_smart_message_debounce`、`enable_jev_rest_wakeup_judge` 和 `enable_jev_group_question_wakeup_reply_review`。普通配置只需使用这些开关；若旧配置曾在 `jev_enabled_tasks` 手工加入同名任务，列表仍具有启用效果，彻底关闭时需同时移除旧列表项。
 
 配置必须经 `_initialize_jev_config` 落到实例属性：判定点通过 `_persona_value`/`persona_setting` 读取，而该解析器读的是实例属性而非配置映射。早期集成缺少这一步，`jev_api_key` 恒为空字符串，导致功能从未真正执行且失败路径静默。
 

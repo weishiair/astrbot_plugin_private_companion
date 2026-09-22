@@ -26,6 +26,9 @@ from .domains.decision import (
     JevClient,
     JevGate,
     JevResult,
+    TASK_GROUP_QUESTION_REVIEW,
+    TASK_REST_WAKEUP,
+    TASK_SMART_DEBOUNCE,
     WIRED_JEV_TASKS,
     resolve_enabled_tasks,
 )
@@ -35,6 +38,12 @@ logger = logging.getLogger("astrbot_plugin_private_companion.jev")
 # JEV 不是 OpenAI 兼容的聊天补全，但在账本里需要一个稳定的 provider 标识，
 # 这样 Token 页能把它的消耗与模型调用分开显示。
 JEV_PROVIDER_BUDGET_LABEL = "jev:systemone"
+
+_JEV_OPT_IN_TASK_SWITCHES: tuple[tuple[str, str], ...] = (
+    ("enable_jev_smart_message_debounce", TASK_SMART_DEBOUNCE),
+    ("enable_jev_rest_wakeup_judge", TASK_REST_WAKEUP),
+    ("enable_jev_group_question_wakeup_reply_review", TASK_GROUP_QUESTION_REVIEW),
+)
 
 _JEV_PROBE_NEVER = {
     "status": "never",
@@ -153,6 +162,10 @@ class JevDecisionMixin:
 
     def _jev_settings(self) -> dict[str, Any]:
         """Read JEV settings from the runtime attributes set at config load."""
+        enabled_tasks = resolve_enabled_tasks(getattr(self, "jev_enabled_tasks", None))
+        for setting_name, task in _JEV_OPT_IN_TASK_SWITCHES:
+            if _jev_bool(getattr(self, setting_name, False)) and task not in enabled_tasks:
+                enabled_tasks.append(task)
         return {
             "enabled": _jev_bool(getattr(self, "enable_jev_decision", False)),
             "api_key": _jev_text(getattr(self, "jev_api_key", "")),
@@ -161,7 +174,7 @@ class JevDecisionMixin:
             "model": _jev_text(getattr(self, "jev_model", "")),
             "timeout": _jev_float(getattr(self, "jev_timeout_seconds", 1.6), 1.6, 0.15, 30.0),
             "concurrency": _jev_int(getattr(self, "jev_max_concurrency", 4), 4, 1, 32),
-            "enabled_tasks": getattr(self, "jev_enabled_tasks", None),
+            "enabled_tasks": enabled_tasks,
             "threshold_overrides": getattr(self, "jev_threshold_overrides", ""),
             "fail_threshold": _jev_int(getattr(self, "jev_fail_threshold", 3), 3, 1, 50),
             "fail_open_seconds": _jev_float(getattr(self, "jev_fail_open_seconds", 90.0), 90.0, 1.0, 3600.0),
