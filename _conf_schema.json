@@ -852,7 +852,7 @@
       "jev_enabled_tasks": {
         "description": "交给 JEV 的判定任务",
         "type": "list",
-        "hint": "留空使用默认集合。可选值：group_followup_judge（续接判断）、group_air_reply_guard（沉默闸门）、smart_silence（智能沉默）、group_interject（插话判断）、group_member_safety（群成员风控）、rest_wakeup_judge（休息醒来）、group_wakeup_context（线索词唤醒，注意这条路径原本不花钱）、smart_message_debounce（智能收口）、proactive_persona_judge（主动人格）、emotion_judgement（情绪判断）。",
+        "hint": "留空使用默认集合。当前已接线并可生效：group_followup_judge（续接判断）、group_air_reply_guard（沉默闸门）、smart_silence（智能沉默）、group_interject（插话判断）。其余注册项为预留能力，当前即使填写也不会发起请求。",
         "default": []
       },
       "jev_threshold_overrides": {
@@ -15602,27 +15602,27 @@
     }
   },
   "enable_jev_decision": {
-    "description": "启用 Jev System One 毫秒级决策引擎",
+    "description": "Legacy flat config: 启用 Jev System One 快速判定引擎",
     "type": "bool",
-    "hint": "默认关闭。开启后，群聊唤醒、插话判断及意图判定将通过 TypeSafe Jev（Vercel AI Gateway）进行非自回归的快速概率决策，延迟约 100-300ms，显著降低 LLM 消耗并避免误触发。",
-    "default": false
+    "default": false,
+    "invisible": true
   },
   "jev_api_key": {
-    "description": "Jev / Vercel API Key",
+    "description": "Legacy flat config: JEV API Key",
     "type": "string",
-    "hint": "填入 Vercel AI Gateway Key（vck_...）或 TypeSafe 官方 API Key。",
-    "default": ""
+    "default": "",
+    "invisible": true
   },
   "jev_gateway_url": {
-    "description": "Jev 网关 API 端点",
+    "description": "Legacy flat config: JEV 网关地址",
     "type": "string",
-    "hint": "默认使用 Vercel AI Gateway: https://ai-gateway.vercel.sh/typesafe/v1/systemone",
-    "default": "https://ai-gateway.vercel.sh/typesafe/v1/systemone"
+    "default": "",
+    "invisible": true
   },
   "jev_model": {
-    "description": "Jev 模型名称",
+    "description": "Legacy flat config: JEV 模型名称",
     "type": "string",
-    "hint": "默认使用 typesafe-ai/jev",
-    "default": "typesafe-ai/jev"
+    "default": "",
+    "invisible": true
   }
 }

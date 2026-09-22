@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 KIND_AUTO = "auto"
 KIND_TYPESAFE = "typesafe"
@@ -48,8 +49,17 @@ class JevEndpointProfile:
     def is_vercel(self) -> bool:
         return self.kind == KIND_VERCEL
 
+    def safe_url(self) -> str:
+        """URL suitable for logs and diagnostics (no credentials or query)."""
+        try:
+            parsed = urlsplit(self.url)
+            netloc = parsed.netloc.rsplit("@", 1)[-1]
+            return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
+        except Exception:
+            return str(self.url or "").split("?", 1)[0].split("#", 1)[0][:400]
+
     def describe(self) -> str:
-        return f"{self.kind} ({self.url}, model={self.model})"
+        return f"{self.kind} ({self.safe_url()}, model={self.model})"
 
 
 def _text(value: Any, limit: int = 400) -> str:

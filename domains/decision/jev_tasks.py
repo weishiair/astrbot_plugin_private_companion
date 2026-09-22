@@ -36,6 +36,7 @@ class JevTaskSpec:
     label: str
     primitive: str
     default_enabled: bool
+    runtime_wired: bool = False
     threshold: float = 0.5
     min_confidence: float = 0.0
     budget_seconds: float = 1.6
@@ -60,6 +61,7 @@ JEV_TASKS: tuple[JevTaskSpec, ...] = (
         label="群聊续接判断",
         primitive="noul",
         default_enabled=True,
+        runtime_wired=True,
         threshold=0.5,
         min_confidence=0.55,
         budget_seconds=1.6,
@@ -70,6 +72,7 @@ JEV_TASKS: tuple[JevTaskSpec, ...] = (
         label="群聊沉默闸门",
         primitive="noul",
         default_enabled=True,
+        runtime_wired=True,
         threshold=0.5,
         min_confidence=0.55,
         budget_seconds=1.6,
@@ -80,6 +83,7 @@ JEV_TASKS: tuple[JevTaskSpec, ...] = (
         label="智能沉默判定",
         primitive="noul",
         default_enabled=True,
+        runtime_wired=True,
         threshold=0.55,
         min_confidence=0.6,
         budget_seconds=1.4,
@@ -90,6 +94,7 @@ JEV_TASKS: tuple[JevTaskSpec, ...] = (
         label="群聊主动插话判断",
         primitive="noul",
         default_enabled=True,
+        runtime_wired=True,
         threshold=0.6,
         min_confidence=0.6,
         budget_seconds=1.6,
@@ -165,6 +170,10 @@ DEFAULT_ENABLED_TASKS: tuple[str, ...] = tuple(
     spec.task for spec in JEV_TASKS if spec.default_enabled
 )
 
+WIRED_JEV_TASKS: tuple[str, ...] = tuple(
+    spec.task for spec in JEV_TASKS if spec.runtime_wired
+)
+
 
 def task_spec(task: str) -> JevTaskSpec | None:
     return TASK_BY_NAME.get(str(task or "").strip())
@@ -205,6 +214,8 @@ def resolve_enabled_tasks(config_value: Any) -> list[str]:
     """Return the effective task set, falling back to the shipped defaults."""
     if config_value is None or config_value == "":
         return list(DEFAULT_ENABLED_TASKS)
+    if isinstance(config_value, (list, tuple, set, frozenset)) and not config_value:
+        return list(DEFAULT_ENABLED_TASKS)
     return normalize_enabled_tasks(config_value)
 
 
@@ -212,6 +223,7 @@ __all__ = [
     "DEFAULT_ENABLED_TASKS",
     "JEV_TASKS",
     "TASK_BY_NAME",
+    "WIRED_JEV_TASKS",
     "TASK_EMOTION_JUDGEMENT",
     "TASK_GROUP_AIR_GUARD",
     "TASK_GROUP_FOLLOWUP",

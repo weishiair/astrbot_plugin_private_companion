@@ -108,8 +108,9 @@ class JevClient:
         gateway_url: str = "",
         model: str = "",
         timeout: float | None = None,
+        max_concurrency: int | None = None,
     ) -> None:
-        """Apply new settings; the pooled session is dropped when the target changes."""
+        """Apply new settings and rebuild pool guards when their shape changes."""
         new_key = str(api_key or "").strip()
         new_profile = resolve_profile(
             kind=kind,
@@ -120,12 +121,21 @@ class JevClient:
         target_changed = (
             new_profile != self.profile or new_key != self.api_key
         )
+        new_concurrency = (
+            self.max_concurrency
+            if max_concurrency is None
+            else max(1, int(max_concurrency))
+        )
+        concurrency_changed = new_concurrency != self.max_concurrency
         self.api_key = new_key
         self.profile = new_profile
+        self.max_concurrency = new_concurrency
         if timeout is not None:
             self.timeout = max(0.15, float(timeout))
-        if target_changed:
+        if target_changed or concurrency_changed:
             self._drop_session()
+        if concurrency_changed:
+            self._semaphore = None
 
     def _drop_session(self) -> None:
         session, self._session = self._session, None
@@ -155,10 +165,17 @@ class JevClient:
         if self._session is not None and self._loop is loop and not self._session.closed:
             return self._session
         if self._session_lock is None or self._loop is not loop:
-            # Loop changed (AstrBot reload): rebuild the guards with the session.
+            # Loop changed (AstrBot reload): an aiohttp session is bound to the
+            # loop that created it and must never be returned on the new loop.
+            old_session, self._session = self._session, None
             self._session_lock = asyncio.Lock()
             self._semaphore = asyncio.Semaphore(self.max_concurrency)
             self._loop = loop
+            if old_session is not None and not old_session.closed:
+                try:
+                    await old_session.close()
+                except Exception:
+                    pass
         async with self._session_lock:
             if self._session is not None and not self._session.closed:
                 return self._session
@@ -297,7 +314,7 @@ class JevClient:
         elif status == 400 and "model" in detail.lower():
             hint = f"模型名 '{self.profile.model}' 不被当前端点接受，请检查 JEV 模型配置。"
         elif status == 404:
-            hint = f"端点路径不存在，请检查网关地址：{self.profile.url}"
+            hint = f"端点路径不存在，请检查网关地址：{self.profile.safe_url()}"
         elif status == 429:
             hint = "上游限流。"
         return f"HTTP {status} {detail}".strip() + (f"（{hint}）" if hint else "")
@@ -390,8 +407,8 @@ class JevClient:
 class JevDecisionEngine:
     """同步兼容外观，供尚未迁移到异步调用点的旧代码继续导入。
 
-    新代码应直接使用 :class:`JevClient`。这里的同步方法会在线程池里跑一次
-    异步调用，因此不会阻塞事件循环——这正是旧实现用 ``urllib`` 直连时的问题。
+    新代码应直接使用 :class:`JevClient`。这里的同步方法是阻塞兼容桥；即使内部
+    在线程池执行，从异步调用点使用它仍会阻塞调用线程，不能替代真正的 ``await``。
     """
 
     def __init__(
@@ -420,7 +437,7 @@ class JevDecisionEngine:
         return self._client.profile
 
     def evaluate_sync(self, state: Any, questions: Mapping[str, Any]) -> dict[str, Any]:
-        """Blocking evaluation that never blocks the caller's event loop."""
+        """Blocking compatibility evaluation; async callers must use ``evaluate``."""
         result = self._run(self._client.evaluate(state, questions))
         if not result.ok:
             logger.warning("Jev evaluation failed: %s", result.error)
@@ -498,13 +515,13 @@ class JevDecisionEngine:
 
     @staticmethod
     def _run(coro: Any) -> JevResult:
-        """Run a coroutine to completion without blocking a running loop."""
+        """Run a coroutine to completion for legacy synchronous callers."""
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             return asyncio.run(coro)
-        # Called from inside a loop: hand the work to a worker thread so the
-        # caller's loop keeps running.
+        # This compatibility path still waits synchronously for the worker.
+        # Production async call sites use JevClient directly and never enter it.
         import concurrent.futures
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
