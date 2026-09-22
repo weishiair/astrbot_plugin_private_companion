@@ -3,6 +3,7 @@
 ## 未发布
 
 ### Jev System One 判定委托
+- 新增 `docs/jev-optimization-opportunities.md` 开发指南：逐项登记已接线、候选、仅可前置过滤和不应迁移的判断场景，并给出任务注册、回退、影子校准、指标与测试要求。
 - 新增 JEV 热身/手动探针可观测性：总览现在显示 `warmup_attempted` 与脱敏的 `last_probe`，并提供显式 `POST /jev/probe` 连通性探针；探针复用在途热身、遵守 Token 日硬限额，用量以 `jev_manual_probe` 记账。
 - 新增 `scripts/astrbot_jev_smoke.py`：通过环境变量读取 AstrBot OpenAPI 地址与凭据，默认只做插件/总览只读检查，只有 `--probe` 才会产生一次 JEV 请求；脚本不打印凭据或完整响应，并提示明文 HTTP 风险。
 - 将默认关闭的 `smart_message_debounce` 与 `rest_wakeup_judge` 接入生产链路：前者在本地快判后的模糊区替代 80 token 完整性判断，后者以 `score` 替代 180 token 休息唤醒判断；JEV 不可用或不确定时均无损回落原模型。
