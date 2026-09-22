@@ -26,6 +26,7 @@ from domains.decision import (  # noqa: E402
     TASK_GROUP_FOLLOWUP,
     TASK_GROUP_INTERJECT,
     TASK_GROUP_MEMBER_SAFETY,
+    TASK_GROUP_QUESTION_REVIEW,
     TASK_REST_WAKEUP,
     TASK_SMART_DEBOUNCE,
     TASK_SMART_SILENCE,
@@ -319,6 +320,10 @@ class TestTaskRegistry:
     def test_opt_in_debounce_and_rest_tasks_are_runtime_wired(self):
         assert {TASK_SMART_DEBOUNCE, TASK_REST_WAKEUP} <= set(WIRED_JEV_TASKS)
         assert {TASK_SMART_DEBOUNCE, TASK_REST_WAKEUP}.isdisjoint(DEFAULT_ENABLED_TASKS)
+
+    def test_group_question_review_is_wired_but_opt_in(self):
+        assert TASK_GROUP_QUESTION_REVIEW in WIRED_JEV_TASKS
+        assert TASK_GROUP_QUESTION_REVIEW not in DEFAULT_ENABLED_TASKS
 
 
 # ----------------------------------------------------------------------

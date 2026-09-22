@@ -1812,7 +1812,7 @@ _ContentStoryModelBudget.max = 8
 
 ### 20.18 Jev System One 判定委托 — 6 个文件
 
-分成五层：**端点层**（`domains/decision/jev_endpoint.py`：端点画像与自动适配，按密钥前缀 `apikey_`/`vck_` 选择 TypeSafe 官方或 Vercel 网关，凭据与 URL 冲突时以凭据为准）、**原语层**（`domains/decision/jev_primitives.py`：noul / choice / score 的构造与容错解析）、**引擎层**（`domains/decision/jev_engine.py`：异步 aiohttp 客户端，连接复用 + 预热 + 信号量，错误信息可执行）、**任务层**（`domains/decision/jev_tasks.py`：10 个可委托任务的注册表）、**闸门层**（`domains/decision/jev_gate.py`：启停 / 阈值 / 置信度下限 / 熔断 / 审计），插件侧接线在根目录 `jev_decision.py`。
+分成五层：**端点层**（`domains/decision/jev_endpoint.py`：端点画像与自动适配，按密钥前缀 `apikey_`/`vck_` 选择 TypeSafe 官方或 Vercel 网关，凭据与 URL 冲突时以凭据为准）、**原语层**（`domains/decision/jev_primitives.py`：noul / choice / score 的构造与容错解析）、**引擎层**（`domains/decision/jev_engine.py`：异步 aiohttp 客户端，连接复用 + 预热 + 信号量，错误信息可执行）、**任务层**（`domains/decision/jev_tasks.py`：11 个可委托任务的注册表）、**闸门层**（`domains/decision/jev_gate.py`：启停 / 阈值 / 置信度下限 / 熔断 / 审计），插件侧接线在根目录 `jev_decision.py`。
 
 核心约束是**判断与生成分离**：JEV 只回答离散结论，凡需产出自然语言的环节仍由原模型完成（插话只接管"要不要说"，正文仍由模型生成）。统一回落契约为返回 `None` 即"照原路径走"，与判定为否的 `False` 严格区分。
 

@@ -64,7 +64,7 @@ URL 与凭据属于不同端点族时，**以凭据为准并忽略该 URL**，�
 
 ## 5. 任务注册表与回落语义
 
-可委托的任务登记在 `JEV_TASKS`，每项声明原语、默认启停、运行时是否已接线、阈值、置信度下限与预算秒数。默认启用且已接线的四项是：`group_followup_judge`、`group_air_reply_guard`、`smart_silence`、`group_interject`。另外两项 `smart_message_debounce` 与 `rest_wakeup_judge` 已接线但默认关闭，需要明确加入 `jev_enabled_tasks` 才会运行。`jev_enabled_tasks` 留空（包括 Schema 下发的空列表）时使用四项默认值；非空但全是未知值时仍保持空集合，避免误开放委托面。
+可委托的任务登记在 `JEV_TASKS`，每项声明原语、默认启停、运行时是否已接线、阈值、置信度下限与预算秒数。默认启用且已接线的四项是：`group_followup_judge`、`group_air_reply_guard`、`smart_silence`、`group_interject`。另外三项 `smart_message_debounce`、`rest_wakeup_judge` 与 `group_question_wakeup_reply_review` 已接线但默认关闭，需要明确加入 `jev_enabled_tasks` 才会运行。`jev_enabled_tasks` 留空（包括 Schema 下发的空列表）时使用四项默认值；非空但全是未知值时仍保持空集合，避免误开放委托面。
 
 统一的回落契约是 **返回 `None` 表示"照原路径走"**：
 
@@ -85,10 +85,11 @@ URL 与凭据属于不同端点族时，**以凭据为准并忽略该 URL**，�
 | 群聊主动插话 | `group_observation.py` | 140 token 调用 | **仅前置过滤** |
 | 智能消息收口（默认关） | `event_dispatch.py` | 80 token 调用，JSON | 本地快判后的模糊区完整接管 |
 | 休息醒来判断（默认关） | `main.py` | 180 token 调用，JSON | `rest_reply_mode=llm` 时完整打分 |
+| 群答疑回复发送前复核（默认关） | `main.py` | 120 token 调用，`send`/`drop` JSON | 完整判定 |
 
 前三项决策与输出本就分离，JEV 可完整接管。插话不同：**决策与正文由同一次 140 token 调用产出**，无法只接管决策。因此改为前置过滤——JEV 判"此刻不适合插话"时直接返回，省掉整次调用；判定适合或不可用时照原路径继续，由模型产出正文。这样只会减少调用，不会让插话判断变差。
 
-续接判断的 JEV 调用位于提供商检查**之前**，因此未配置判定模型的群也能受益——原实现在无模型时直接返回 `None` 走规则，属常见配置。
+续接判断和群答疑发送前复核的 JEV 调用都位于提供商检查**之前**，因此未配置相应判定模型的群也能受益。群答疑复核中 `True` 直接放行、`False` 直接拦截，`None` 才执行原 120-token 模型路径。
 
 其余四项 `group_member_safety`、`group_wakeup_context`、`proactive_persona_judge`、`emotion_judgement` 仍只保留为未来接线的注册项。闸门会对这些未接线任务 fail closed：即使误填进配置也不会发起网络请求；诊断中的 `configured_unwired_tasks` 会明确列出它们。
 
@@ -108,7 +109,7 @@ Token 用量并入插件既有账本，`provider_id` 为 `jev:systemone`，受�
 
 | 优先级 | 场景 | 结论 |
 |---|---|---|
-| 高 | `group_question_wakeup_reply_review` | 当前 120 token、只输出 `send/drop`，适合下一批新增 `noul` 任务并先做线上校准 |
+| 已接线、待校准 | `group_question_wakeup_reply_review` | 默认关闭；`noul` 完整接管，`None` 回落原 120-token 模型路径 |
 | 中低 | `proactive_persona_judge` | `send/defer/drop` 外还可能要求改写，JEV 只能做前置过滤，不能完全替代 |
 | 不迁移 | `group_member_safety` | 误判代价高，且仍需 reason/severity |
 | 不迁移 | `emotion_judgement` | 需要 event/target/intensity/severity/tier 多字段 |

@@ -852,7 +852,7 @@
       "jev_enabled_tasks": {
         "description": "交给 JEV 的判定任务",
         "type": "list",
-        "hint": "留空使用默认集合。当前已接线并可生效：group_followup_judge（续接判断）、group_air_reply_guard（沉默闸门）、smart_silence（智能沉默）、group_interject（插话判断）。其余注册项为预留能力，当前即使填写也不会发起请求。",
+        "hint": "留空使用默认集合。当前已接线并可生效：group_followup_judge（续接判断）、group_air_reply_guard（沉默闸门）、smart_silence（智能沉默）、group_interject（插话判断）、smart_message_debounce（智能收口）、rest_wakeup_judge（休息唤醒）、group_question_wakeup_reply_review（群答疑发送前复核）。后三项默认关闭，需显式加入列表。未接线的注册项即使填写也不会发起请求。",
         "default": []
       },
       "jev_threshold_overrides": {

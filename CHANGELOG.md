@@ -3,6 +3,7 @@
 ## 未发布
 
 ### Jev System One 判定委托
+- 接入默认关闭的 `group_question_wakeup_reply_review`：JEV 用 `noul` 完整接管群答疑回复的 `send/drop` 发送前复核；明确结论时省去 120-token 模型调用，`None`、异常、低置信度和熔断均回落原路径，且在未配置复核模型时仍可生效。
 - 新增 `docs/jev-optimization-opportunities.md` 开发指南：逐项登记已接线、候选、仅可前置过滤和不应迁移的判断场景，并给出任务注册、回退、影子校准、指标与测试要求。
 - 新增 JEV 热身/手动探针可观测性：总览现在显示 `warmup_attempted` 与脱敏的 `last_probe`，并提供显式 `POST /jev/probe` 连通性探针；探针复用在途热身、遵守 Token 日硬限额，用量以 `jev_manual_probe` 记账。
 - 新增 `scripts/astrbot_jev_smoke.py`：通过环境变量读取 AstrBot OpenAPI 地址与凭据，默认只做插件/总览只读检查，只有 `--probe` 才会产生一次 JEV 请求；脚本不打印凭据或完整响应，并提示明文 HTTP 风险。
@@ -10,7 +11,7 @@
 - 修复 JEV 打开后仍可能完全不工作的默认配置：Schema 的空任务列表现在按文案所述解析为四项已接线默认任务；非空未知任务列表继续 fail closed。
 - 修复启动热身顺序与生命周期：先创建/重配闸门再热身，热身任务可复用、可取消、卸载时会等待清理；热身未完成时消息回落原路径，避免首条真实请求与冷启动探测并发。热身 Token 以 `jev_warmup` 记账。
 - 修复并发请求 Token 重复记账：改为逐请求消费 `JevResult.usage`，不再对共享累计值做前后差；同时让运行时 `jev_max_concurrency` 变更真正重建信号量和连接池。
-- 明确任务接线边界：当前仅四项生产任务可发起 JEV 请求，另外六项预留注册任务即使写入配置也会 fail closed，并在诊断中列为 `configured_unwired_tasks`。
+- 明确任务接线边界：当前七项生产任务可发起 JEV 请求，其中四项默认开启、三项默认关闭；另外四项预留注册任务即使写入配置也会 fail closed，并在诊断中列为 `configured_unwired_tasks`。
 - 将 JEV 诊断接入总览接口，并裁掉自定义 URL 的用户信息、查询串与片段；把 Schema 根节点残留的旧版 JEV 字段收敛为隐藏兼容项并清空旧网关/模型默认值，避免覆盖自动端点识别。
 - 修复事件循环迁移时复用旧 aiohttp session 的问题，并更正旧同步兼容接口“不会阻塞事件循环”的误导性说明。
 - 重写 JEV 客户端为异步实现并复用长连接：原实现用 `urllib` 同步直连，在群聊消息链路里每次判定都会阻塞事件循环一整个往返；改用 aiohttp 连接池后实测单次往返从 ~900ms 降到 ~0.26s，并新增连接预热避免首次建连（~1.8s）吃掉判定预算。

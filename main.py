@@ -11019,8 +11019,6 @@ class PrivateCompanionPlugin(
             runtime_persona_setting(self, "group_followup_judge_provider_id", ""),
             runtime_persona_setting(self, "mai_style_provider_id", ""),
         )
-        if not provider_id:
-            return {"decision": "send", "reason": "未配置复核模型"}
         scene = getattr(event, "private_companion_group_scene", None)
         if not isinstance(scene, dict):
             scene = {}
@@ -11042,6 +11040,48 @@ class PrivateCompanionPlugin(
             else ""
         )
         wakeup = group.get("last_group_wakeup") if isinstance(group.get("last_group_wakeup"), dict) else {}
+        jev_started = time.perf_counter()
+        jev_decision: bool | None = None
+        jev_noul = getattr(self, "_jev_noul", None)
+        if callable(jev_noul):
+            try:
+                jev_decision = await jev_noul(
+                    task="group_question_wakeup_reply_review",
+                    state=(
+                        "场景：群聊中的公共求助或开放问题触发了 Bot 答疑。\n"
+                        f"唤醒方式：{_single_line(scene.get('trigger'), 40) or '未记录'}\n"
+                        f"唤醒原因：{_single_line(scene.get('reason'), 80) or '未记录'}\n"
+                        f"唤醒评分：{_single_line(wakeup.get('score'), 20) or '未记录'}/"
+                        f"{_single_line(wakeup.get('threshold'), 20) or '未记录'}\n"
+                        f"最近群聊：\n{recent_flow or '（无）'}\n"
+                        f"触发消息：{inbound_text or '（空）'}\n"
+                        f"待发送回复：{_single_line(reply_text, 360) or '（空）'}"
+                    ),
+                    instructions=(
+                        "判断待发送回复是否确实在自然回答群里的公共求助或开放问题，"
+                        "并且 Bot 此时插入不会像碰瓷接话。公共求助回答 true；"
+                        "接群友的话、吐槽、反问、私人对话或不需要 Bot 插入时回答 false。"
+                    ),
+                    true_hint="应该发送：这是对群内公共求助或开放问题的自然、有帮助回答",
+                    false_hint="应该拦截：问题不是在问 Bot，或回复会显得突兀、打断群友交流",
+                )
+            except Exception as exc:
+                logger.debug("JEV 群答疑发送前复核失败，回落到模型: %s", _single_line(exc, 120))
+                jev_decision = None
+        if jev_decision is not None:
+            decision = "send" if jev_decision else "drop"
+            reason = "JEV 判定适合发送" if jev_decision else "JEV 判定应拦截"
+            logger.info(
+                "群聊答疑回复发送前复核: source=jev decision=%s elapsed=%dms reason=%s trigger=%s text=%s",
+                decision,
+                int((time.perf_counter() - jev_started) * 1000),
+                reason,
+                _single_line(scene.get("trigger"), 40),
+                _single_line(reply_text, 140),
+            )
+            return {"decision": decision, "reason": reason}
+        if not provider_id:
+            return {"decision": "send", "reason": "未配置复核模型"}
         intro_section = prompt_section(
             key="background.group_question_wakeup_review.intro",
             title="群唤醒回复发送前复核",

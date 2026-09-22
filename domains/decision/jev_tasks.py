@@ -19,6 +19,7 @@ from typing import Any
 TASK_SMART_SILENCE = "smart_silence"
 TASK_GROUP_FOLLOWUP = "group_followup_judge"
 TASK_GROUP_AIR_GUARD = "group_air_reply_guard"
+TASK_GROUP_QUESTION_REVIEW = "group_question_wakeup_reply_review"
 TASK_SMART_DEBOUNCE = "smart_message_debounce"
 TASK_GROUP_MEMBER_SAFETY = "group_member_safety"
 TASK_GROUP_INTERJECT = "group_interject"
@@ -99,6 +100,17 @@ JEV_TASKS: tuple[JevTaskSpec, ...] = (
         min_confidence=0.6,
         budget_seconds=1.6,
         note="只接管“要不要插话”；插话正文仍由原模型生成，JEV 不产出文本。",
+    ),
+    JevTaskSpec(
+        task=TASK_GROUP_QUESTION_REVIEW,
+        label="群答疑回复发送前复核",
+        primitive="noul",
+        default_enabled=False,
+        runtime_wired=True,
+        threshold=0.5,
+        min_confidence=0.6,
+        budget_seconds=1.6,
+        note="判断已经生成的群答疑回复应发送还是拦截；只替代 120 token 的 send/drop 复核，不生成正文。",
     ),
     JevTaskSpec(
         task=TASK_GROUP_MEMBER_SAFETY,
@@ -231,6 +243,7 @@ __all__ = [
     "TASK_GROUP_FOLLOWUP",
     "TASK_GROUP_INTERJECT",
     "TASK_GROUP_MEMBER_SAFETY",
+    "TASK_GROUP_QUESTION_REVIEW",
     "TASK_GROUP_WAKEUP_CONTEXT",
     "TASK_PROACTIVE_PERSONA",
     "TASK_REST_WAKEUP",

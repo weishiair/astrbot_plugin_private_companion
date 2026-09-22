@@ -10,13 +10,13 @@
 
 ## 1. 结论摘要
 
-当前生产代码中已有 6 个 JEV 接线点：4 个默认开启、2 个默认关闭。下一项最值得实现的是 `group_question_wakeup_reply_review`，因为它当前用一次 120-token 模型调用只产生 `send/drop`，决策与文本生成已经完全分离。
+当前生产代码中已有 7 个 JEV 接线点：4 个默认开启、3 个默认关闭。P0 `group_question_wakeup_reply_review` 已完成接线：它用 `noul` 接管只产生 `send/drop` 的 120-token 复核，JEV 不可用或不确定时无损回落原模型。
 
 随后可考虑两个“只减少调用、不负责生成”的前置过滤器：
 
 | 优先级 | 场景 | 推荐方式 | 原因 |
 |---|---|---|---|
-| P0 | 群答疑回复发送前复核 | `noul` 完整接管，默认关闭并先影子校准 | 输出只有 `send/drop`，原模型不生成正文 |
+| P0（已实现） | 群答疑回复发送前复核 | `noul` 完整接管，默认关闭并先离线/小流量校准 | 输出只有 `send/drop`，原模型不生成正文 |
 | P1 | QQ 空间评论回复决策 | `noul` 只接管“明确跳过”；需要回复时仍跑原模型生成正文 | 当前 120-token 调用同时判断并生成评论 |
 | P1 | 外界信息主动分享意愿 | `noul` 或 `score` 只接管“明确不分享”；可能分享时仍跑原模型 | 当前 360-token 调用还要生成 motive/tone/boundary |
 | P2 | 主动人格判定 | 仅影子评估或低风险前置过滤 | 需要 `rewrite/defer/drop` 及计划字段，不能完整替代 |
@@ -60,14 +60,15 @@
 | `group_interject` | `noul` | 已接线 | 开 | 140-token 判断并生成插话正文 | 只在明确不插话时前置结束 |
 | `smart_message_debounce` | `noul` | 已接线 | 关 | 80-token `complete/incomplete` JSON | 完整接管；0.8 秒总预算偏紧 |
 | `rest_wakeup_judge` | `score` | 已接线 | 关 | 180-token 休息唤醒评分 | 完整接管；连续分数置信度需单独校准 |
+| `group_question_wakeup_reply_review` | `noul` | 已接线 | 关 | 120-token `send/drop` JSON | 完整接管；在 provider 检查前运行 |
 | `group_member_safety` | `noul` | 已注册、未接线 | 关 | 280-token 风控 JSON | 不完整迁移；需要 category/severity/evidence |
 | `group_wakeup_context` | `noul` | 已注册、未接线 | 关 | 本地正则评分 | 不迁移；原路径零模型成本 |
 | `proactive_persona_judge` | `choice` | 已注册、未接线 | 关 | 260-token 主动计划判断 | 仅影子/前置过滤；仍需改写计划字段 |
 | `emotion_judgement` | `choice` | 已注册、未接线 | 关 | 180-token 情绪复核 JSON | 不完整迁移；需要多字段与关系边界证据 |
 
-## 4. 推荐候选
+## 4. 已实现与推荐候选
 
-### 4.1 P0：群答疑回复发送前复核
+### 4.1 P0（已实现）：群答疑回复发送前复核
 
 - 位置：`main.py::_review_group_question_wakeup_reply_before_send`
 - 当前成本：一次最多 120 token 的模型调用。
@@ -77,14 +78,14 @@
 - 推荐问题语义：`true = 应发送`，`false = 应拦截`。
 - 推荐初始配置：`default_enabled=False`，预算 1.6 秒，`min_confidence` 先取 0.60。
 
-这是最干净的下一项，因为待发送回复已经由上游生成，本方法只决定是否放行；`reason` 仅用于日志，不参与业务计算。接入点应位于 provider 检查之前，使未配置复核模型时也能使用 JEV。
+这是最干净的完整接管场景，因为待发送回复已经由上游生成，本方法只决定是否放行；`reason` 仅用于日志，不参与业务计算。当前接入点位于 provider 检查之前，因此未配置复核模型时也能使用 JEV。
 
 回退契约：
 
 - `True`：返回固定理由的 `send`；
 - `False`：返回固定理由的 `drop`；
 - `None`：原样执行现有 120-token 复核；
-- 开关默认关闭，先影子比对群聊公共求助、吐槽、反问、接群友话等样本。
+- 开关默认关闭，启用前先离线比对群聊公共求助、吐槽、反问、接群友话等样本，再做小流量校准。
 
 主要风险是误放行造成 Bot 碰瓷插话，或误拦截真实公共求助。上线前应分别统计 `send→drop` 与 `drop→send` 的分歧，而不能只看总一致率。
 
@@ -265,8 +266,8 @@ return await existing_judgement_and_generation_path()
 
 | 阶段 | 工作项 | 完成标准 |
 |---|---|---|
-| 1 | `group_question_wakeup_reply_review` 影子评估与接线 | 默认关闭；纯 `noul`；`None` 回落 120-token 原路径 |
-| 2 | 建立每任务分歧统计 | 能区分 JEV、原模型、规则来源及两个方向的分歧 |
+| 1（已完成） | `group_question_wakeup_reply_review` 接线 | 默认关闭；纯 `noul`；`None` 回落 120-token 原路径 |
+| 2 | P0 离线/小流量校准并建立每任务分歧统计 | 能区分 JEV、原模型、规则来源及两个方向的分歧 |
 | 3 | `qzone_comment_reply_prefilter` 影子评估 | 只评估明确 skip；不生成正文、不绕过隐私检查 |
 | 4 | `external_event_share_prefilter` 影子评估 | 本地强规则优先；JEV 只过滤明显无关信息 |
 | 5 | 复盘两个已接线默认关闭任务 | 用真实延迟和误判数据决定是否继续 opt-in |
