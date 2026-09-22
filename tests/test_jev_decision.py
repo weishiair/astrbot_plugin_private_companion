@@ -895,3 +895,26 @@ class TestWiringGuards:
             for node in ast.walk(tree)
             if isinstance(node, ast.Attribute)
         }
+
+    def test_interject_prefilter_only_skips_on_confident_no(self):
+        """The interject prefilter may only ever *remove* a generation call.
+
+        It returns False solely when JEV is confident the bot should stay out;
+        every other outcome (disabled, unavailable, unsure, or a yes) must
+        return None so the original model path still produces the reply text.
+        """
+        import ast
+
+        source = (ROOT / "group_observation.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        methods = {
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        assert "_group_interject_jev_prefilter" in methods
+
+        # The call site must guard on `is False`, never on a falsy check, or an
+        # abstaining None would be treated as "do not interject".
+        assert "if jev_prefilter is False:" in source
+        assert "if not jev_prefilter:" not in source
