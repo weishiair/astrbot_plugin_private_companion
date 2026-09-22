@@ -393,7 +393,12 @@ class JevClient:
         warmup_timeout = max(1.0, float(timeout if timeout is not None else max(self.timeout, 4.0)))
         result = await self.probe(timeout=warmup_timeout)
         if not result.ok:
-            logger.info("Jev warmup did not succeed (%s); first real call may be slower", result.error)
+            # Upstream error bodies are retained in the redacted diagnostics,
+            # but should never be copied verbatim into process logs.
+            logger.info(
+                "Jev warmup did not succeed (status=%s); first real call may be slower",
+                int(result.status or 0),
+            )
         else:
             logger.debug("Jev warmup ok in %sms", result.elapsed_ms)
         return result

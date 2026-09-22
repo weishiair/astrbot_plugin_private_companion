@@ -17474,6 +17474,31 @@ class PrivateCompanionPlugin(
         runtime: dict[str, Any],
         is_private_chat: bool,
     ) -> tuple[int, str]:
+        jev_score = getattr(self, "_jev_score", None)
+        if callable(jev_score):
+            try:
+                delegated_score = await jev_score(
+                    task="rest_wakeup_judge",
+                    state=(
+                        f"睡眠阶段：{_single_line(runtime.get('label') or runtime.get('phase'), 40) or '未知'}\n"
+                        f"当前日程：{schedule_text or '未知'}\n"
+                        f"会话类型：{'私聊' if is_private_chat else '群聊'}\n"
+                        f"用户消息：{_single_line(text, 800)}"
+                    ),
+                    instructions=(
+                        "给休息中的 Bot 是否应醒来回复打 0 到 100 分。"
+                        "明确叫醒、紧急安全风险、明显情绪支持需求或继续不回复很不合适时高分；"
+                        "普通闲聊、表情、无明确对象的群聊、可稍后回复的内容低分；"
+                        "用户要求别打扰时必须接近 0 分。"
+                    ),
+                    low="完全不值得打扰，应继续休息",
+                    high="必须尽快醒来回复",
+                    timeout=1.8,
+                )
+                if delegated_score is not None:
+                    return max(0, min(100, int(round(delegated_score)))), "jev"
+            except Exception as exc:
+                logger.warning("休息唤醒 JEV 判断失败,回落原模型: %s", type(exc).__name__)
         section = prompt_section(
             key="background.rest_wakeup_judge",
             title="休息中唤醒判断",

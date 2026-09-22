@@ -27,6 +27,7 @@ from domains.decision import (  # noqa: E402
     TASK_GROUP_INTERJECT,
     TASK_GROUP_MEMBER_SAFETY,
     TASK_REST_WAKEUP,
+    TASK_SMART_DEBOUNCE,
     TASK_SMART_SILENCE,
     WIRED_JEV_TASKS,
     JevAnswer,
@@ -314,6 +315,10 @@ class TestTaskRegistry:
     def test_defaults_exclude_task_that_replaces_a_free_regex_path(self):
         """group_wakeup_context replaces regex scoring, so it costs rather than saves."""
         assert "group_wakeup_context" not in DEFAULT_ENABLED_TASKS
+
+    def test_opt_in_debounce_and_rest_tasks_are_runtime_wired(self):
+        assert {TASK_SMART_DEBOUNCE, TASK_REST_WAKEUP} <= set(WIRED_JEV_TASKS)
+        assert {TASK_SMART_DEBOUNCE, TASK_REST_WAKEUP}.isdisjoint(DEFAULT_ENABLED_TASKS)
 
 
 # ----------------------------------------------------------------------
@@ -825,6 +830,8 @@ class TestPluginMixin:
         diagnostics = host.jev_diagnostics()
         assert diagnostics["active"] is False
         assert diagnostics["api_key_set"] is True
+        assert diagnostics["warmup_attempted"] is False
+        assert diagnostics["last_probe"]["status"] == "never"
 
     def test_gate_uses_auto_detected_endpoint_for_typesafe_key(self):
         host = _mixin_host(enable_jev_decision=True, jev_api_key="apikey_x")
@@ -960,6 +967,134 @@ class TestPluginMixin:
                 "jev_warmup",
                 f"jev_{TASK_GROUP_FOLLOWUP}",
             ]
+
+        _run(scenario())
+
+    def test_warmup_result_is_visible_in_probe_diagnostics(self):
+        class WarmClient(_FakeClient):
+            async def warmup(self, *, timeout=None):
+                return JevResult(ok=True, elapsed_ms=23, status=200)
+
+        async def scenario():
+            host = _mixin_host(enable_jev_decision=True, jev_api_key="apikey_x")
+            host._jev_gate_obj = JevGate(
+                client=WarmClient(),
+                master_enabled=True,
+                enabled_tasks=[TASK_GROUP_FOLLOWUP],
+            )
+            assert host._jev_ensure_warm(host._jev_gate_obj) is False
+            await host._jev_warmup_task
+            diagnostics = host.jev_diagnostics()
+            assert diagnostics["warmed"] is True
+            assert diagnostics["warmup_attempted"] is True
+            assert diagnostics["last_probe"]["status"] == "ok"
+            assert diagnostics["last_probe"]["source"] == "warmup"
+            assert diagnostics["last_probe"]["http_status"] == 200
+
+        _run(scenario())
+
+    def test_probe_error_redacts_credentials_and_url_details(self):
+        from astrbot_plugin_private_companion.jev_decision import _jev_safe_error
+
+        secret = "apikey_super_secret"
+        error = _jev_safe_error(
+            "Authorization: Bearer apikey_super_secret failed at "
+            "https://user:pass@example.test/v1/probe?token=also_secret#fragment",
+            secret,
+        )
+        assert secret not in error
+        assert "user:pass" not in error
+        assert "also_secret" not in error
+        assert "fragment" not in error
+        assert "https://example.test/v1/probe" in error
+
+    def test_gate_diagnostics_redact_recent_and_breaker_errors(self):
+        secret = "apikey_super_secret"
+        failure = JevResult(
+            ok=False,
+            error=(
+                "Authorization: Bearer apikey_super_secret at "
+                "https://user:pass@example.test/v1/probe?token=also_secret"
+            ),
+        )
+        host = _mixin_host(enable_jev_decision=True, jev_api_key=secret)
+        host._jev_gate_obj = JevGate(
+            client=_FakeClient([failure]),
+            master_enabled=True,
+            enabled_tasks=[TASK_GROUP_FOLLOWUP],
+        )
+        host._jev_warmup_attempted = True
+        assert _run(
+            host._jev_noul(task=TASK_GROUP_FOLLOWUP, state="s", instructions="i")
+        ) is None
+        diagnostics = host.jev_diagnostics()
+        rendered = str(diagnostics)
+        assert secret not in rendered
+        assert "user:pass" not in rendered
+        assert "also_secret" not in rendered
+        assert "https://example.test/v1/probe" in rendered
+
+    def test_manual_probe_works_with_master_switch_off_and_is_charged(self):
+        class ProbeClient(_FakeClient):
+            async def warmup(self, *, timeout=None):
+                return JevResult(
+                    ok=True,
+                    elapsed_ms=19,
+                    status=200,
+                    usage={"input_tokens": 4, "output_tokens": 1, "total_tokens": 5},
+                )
+
+        async def scenario():
+            host = _mixin_host(enable_jev_decision=False, jev_api_key="apikey_x")
+            host._jev_gate_obj = JevGate(client=ProbeClient(), master_enabled=False)
+            result = await host.jev_probe()
+            assert result["status"] == "ok"
+            assert result["source"] == "manual"
+            assert [entry["task"] for entry in host.recorded] == ["jev_manual_probe"]
+
+        _run(scenario())
+
+    def test_manual_probe_honours_zero_daily_budget(self):
+        from astrbot_plugin_private_companion.jev_decision import JevDecisionMixin
+
+        class Host(JevDecisionMixin, _MixinHarness):
+            def _llm_daily_budget_remaining(self):
+                return 0
+
+        async def scenario():
+            host = Host(enable_jev_decision=False, jev_api_key="apikey_x")
+            result = await host.jev_probe()
+            assert result["status"] == "skipped_budget"
+            assert result["source"] == "manual"
+
+        _run(scenario())
+
+    def test_concurrent_manual_probes_share_one_request(self):
+        class ProbeClient(_FakeClient):
+            def __init__(self):
+                super().__init__()
+                self.warmups = 0
+                self.started = asyncio.Event()
+                self.release = asyncio.Event()
+
+            async def warmup(self, *, timeout=None):
+                self.warmups += 1
+                self.started.set()
+                await self.release.wait()
+                return JevResult(ok=True, elapsed_ms=10, status=200)
+
+        async def scenario():
+            host = _mixin_host(enable_jev_decision=False, jev_api_key="apikey_x")
+            client = ProbeClient()
+            host._jev_gate_obj = JevGate(client=client, master_enabled=False)
+            first = asyncio.create_task(host.jev_probe())
+            await client.started.wait()
+            second = asyncio.create_task(host.jev_probe())
+            await asyncio.sleep(0)
+            client.release.set()
+            results = await asyncio.gather(first, second)
+            assert [item["status"] for item in results] == ["ok", "ok"]
+            assert client.warmups == 1
 
         _run(scenario())
 
@@ -1120,3 +1255,11 @@ class TestWiringGuards:
         # abstaining None would be treated as "do not interject".
         assert "if jev_prefilter is False:" in source
         assert "if not jev_prefilter:" not in source
+
+    def test_opt_in_debounce_and_rest_call_sites_fall_back_to_existing_models(self):
+        debounce = (ROOT / "event_dispatch.py").read_text(encoding="utf-8")
+        rest = (ROOT / "main.py").read_text(encoding="utf-8")
+        assert 'task="smart_message_debounce"' in debounce
+        assert "if jev_decision is None:" in debounce
+        assert 'task="rest_wakeup_judge"' in rest
+        assert "if delegated_score is not None:" in rest

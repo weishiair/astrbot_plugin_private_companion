@@ -1257,6 +1257,7 @@ class PrivateCompanionPageApi(
         """Return the wrapped page handlers used by every transport."""
         routes = [
             ("/overview", self.get_overview, ["GET"], "Private Companion Page overview"),
+            ("/jev/probe", self.run_jev_probe, ["POST"], "Private Companion JEV connectivity probe"),
             ("/calendar", self.get_calendar, ["GET"], "Private Companion Page long-lived calendar"),
             ("/calendar/conflicts", self.get_calendar_conflicts, ["GET"], "Private Companion Page calendar conflicts"),
             ("/calendar/preview", self.preview_calendar, ["POST"], "Private Companion Page preview calendar record"),
@@ -1752,6 +1753,19 @@ class PrivateCompanionPageApi(
                 exc_info=True,
             )
             return deepcopy(fallback)
+
+    async def run_jev_probe(self) -> dict[str, Any]:
+        probe = getattr(self.plugin, "jev_probe", None)
+        if not callable(probe):
+            return self._error("当前插件实例不支持 JEV 探针", status_code=503)
+        try:
+            result = await probe()
+            return self._ok(result)
+        except Exception as exc:
+            # Probe exceptions may contain request details. Log only the type;
+            # the mixin exposes its own redacted diagnostic error separately.
+            logger.error("JEV 探针执行失败: error_type=%s", type(exc).__name__)
+            return self._exception_error("JEV 探针执行失败")
 
     @_multi_persona_page_context
     async def get_overview(self) -> dict[str, Any]:
