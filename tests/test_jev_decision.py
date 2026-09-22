@@ -2,7 +2,7 @@
 """JEV 判定域的单元测试：端点适配、原语契约、闸门策略、插件侧配置。
 
 这些用例全部离线运行：闸门测试注入假客户端，因此不依赖网络也不消耗额度。
-需要真实端点的联调放在 tests/test_jev_live.py，未配置 Key 时自动跳过。
+真实端点联调不放进自动化套件，避免 CI 依赖密钥或产生额度消耗。
 """
 from __future__ import annotations
 
@@ -25,8 +25,10 @@ from domains.decision import (  # noqa: E402
     TASK_GROUP_AIR_GUARD,
     TASK_GROUP_FOLLOWUP,
     TASK_GROUP_INTERJECT,
+    TASK_GROUP_MEMBER_SAFETY,
     TASK_REST_WAKEUP,
     TASK_SMART_SILENCE,
+    WIRED_JEV_TASKS,
     JevAnswer,
     JevClient,
     JevEndpointProfile,
@@ -161,6 +163,11 @@ class TestEndpointResolution:
         assert items["jev_gateway_url"]["default"] == ""
         assert items["jev_model"]["default"] == ""
         assert items["jev_endpoint_kind"]["default"] == "auto"
+        assert schema["enable_jev_decision"]["invisible"] is True
+        assert schema["jev_gateway_url"]["invisible"] is True
+        assert schema["jev_gateway_url"]["default"] == ""
+        assert schema["jev_model"]["invisible"] is True
+        assert schema["jev_model"]["default"] == ""
 
     def test_credential_hint_flags_mismatch(self):
         vercel = resolve_profile(kind=KIND_VERCEL, api_key="apikey_abc")
@@ -294,6 +301,15 @@ class TestTaskRegistry:
     def test_empty_config_falls_back_to_shipped_defaults(self):
         assert resolve_enabled_tasks("") == list(DEFAULT_ENABLED_TASKS)
         assert resolve_enabled_tasks(None) == list(DEFAULT_ENABLED_TASKS)
+        assert resolve_enabled_tasks([]) == list(DEFAULT_ENABLED_TASKS)
+        assert resolve_enabled_tasks(()) == list(DEFAULT_ENABLED_TASKS)
+        assert resolve_enabled_tasks(set()) == list(DEFAULT_ENABLED_TASKS)
+
+    def test_nonempty_unknown_only_config_stays_fail_closed(self):
+        assert resolve_enabled_tasks(["not_a_task"]) == []
+
+    def test_all_defaults_are_connected_to_production_callers(self):
+        assert set(DEFAULT_ENABLED_TASKS) <= set(WIRED_JEV_TASKS)
 
     def test_defaults_exclude_task_that_replaces_a_free_regex_path(self):
         """group_wakeup_context replaces regex scoring, so it costs rather than saves."""
@@ -335,11 +351,22 @@ class _FakeClient:
     async def warmup(self, *, timeout=None):
         return JevResult(ok=True)
 
-    def reconfigure(self, *, api_key="", kind="auto", gateway_url="", model="", timeout=None):
+    def reconfigure(
+        self,
+        *,
+        api_key="",
+        kind="auto",
+        gateway_url="",
+        model="",
+        timeout=None,
+        max_concurrency=None,
+    ):
         """Mirror JevClient.reconfigure so the mixin can drive this fake."""
         self.is_configured = bool(str(api_key or "").strip())
         if timeout is not None:
             self.timeout = timeout
+        if max_concurrency is not None:
+            self.max_concurrency = max_concurrency
 
     async def aclose(self):
         return None
@@ -396,6 +423,23 @@ class TestGatePolicy:
             enabled_tasks=[TASK_SMART_SILENCE],
         )
         assert _run(gate.decide_noul(task=TASK_GROUP_FOLLOWUP, state="x", instructions="y")) is None
+
+    def test_configured_but_unwired_task_never_calls_network(self):
+        client = _FakeClient([_noul_result(0.99)])
+        gate = JevGate(
+            client=client,
+            master_enabled=True,
+            enabled_tasks=[TASK_GROUP_MEMBER_SAFETY],
+        )
+        assert _run(
+            gate.decide_noul(
+                task=TASK_GROUP_MEMBER_SAFETY,
+                state="x",
+                instructions="y",
+            )
+        ) is None
+        assert client.calls == []
+        assert gate.stats()["configured_unwired_tasks"] == [TASK_GROUP_MEMBER_SAFETY]
 
     def test_unconfigured_client_returns_none(self):
         gate = JevGate(
@@ -484,6 +528,7 @@ class TestGatePolicy:
             client=_FakeClient([_choice_result("ask_bot", confidence=0.1)]),
             master_enabled=True,
             enabled_tasks=[TASK_REST_WAKEUP],
+            wired_tasks=[TASK_REST_WAKEUP],
         )
         assert _run(gate.decide_choice(
             task=TASK_REST_WAKEUP, state="s", instructions="i", criteria={"ask_bot": "a"}
@@ -496,6 +541,7 @@ class TestGatePolicy:
             client=_FakeClient([_score_result(0.9, confidence=0.05)]),
             master_enabled=True,
             enabled_tasks=[TASK_REST_WAKEUP],
+            wired_tasks=[TASK_REST_WAKEUP],
         )
         assert _run(gate.decide_score(
             task=TASK_REST_WAKEUP, state="s", instructions="i", low="l", high="h"
@@ -587,6 +633,7 @@ class TestGatePolicy:
             client=_FakeClient([_choice_result("ask_bot"), _choice_result("something_else")]),
             master_enabled=True,
             enabled_tasks=[TASK_REST_WAKEUP],
+            wired_tasks=[TASK_REST_WAKEUP],
         )
         label = _run(gate.decide_choice(
             task=TASK_REST_WAKEUP, state="s", instructions="i", criteria={"ask_bot": "a"}, allowed=("ask_bot",)
@@ -602,6 +649,7 @@ class TestGatePolicy:
             client=_FakeClient([_score_result(0.72, confidence=0.8)]),
             master_enabled=True,
             enabled_tasks=[TASK_REST_WAKEUP],
+            wired_tasks=[TASK_REST_WAKEUP],
         )
         score = _run(gate.decide_score(
             task=TASK_REST_WAKEUP, state="s", instructions="i", low="low", high="high"
@@ -648,6 +696,41 @@ class TestClientOffline:
         assert client.profile.kind == KIND_TYPESAFE
         client.reconfigure(api_key="vck_y", kind="auto")
         assert client.profile.kind == KIND_VERCEL
+
+    def test_reconfigure_applies_runtime_concurrency_and_drops_pool(self):
+        class Session:
+            closed = False
+
+            async def close(self):
+                self.closed = True
+
+        async def scenario():
+            client = JevClient(api_key="apikey_x", max_concurrency=4)
+            session = Session()
+            client._session = session
+            client.reconfigure(
+                api_key="apikey_x",
+                max_concurrency=2,
+            )
+            await asyncio.sleep(0)
+            assert client.max_concurrency == 2
+            assert client._session is None
+            assert client._semaphore is None
+            assert session.closed is True
+
+        _run(scenario())
+
+    def test_diagnostic_endpoint_strips_embedded_credentials_and_query(self):
+        profile = JevEndpointProfile(
+            kind=KIND_CUSTOM,
+            url="https://user:secret@example.test/v1/systemone?token=hidden#fragment",
+            model="jev",
+            reason="test",
+        )
+        description = profile.describe()
+        assert "secret" not in description
+        assert "hidden" not in description
+        assert description == "custom (https://example.test/v1/systemone, model=jev)"
 
     def test_invalid_question_reports_question_error(self):
         client = JevClient(api_key="apikey_x")
@@ -763,6 +846,16 @@ class TestPluginMixin:
         assert "breaker" in diagnostics
         assert diagnostics["breaker"]["open"] is False
 
+    def test_diagnostics_identifies_configured_unwired_tasks(self):
+        host = _mixin_host(
+            enable_jev_decision=True,
+            jev_api_key="apikey_x",
+            jev_enabled_tasks=[TASK_GROUP_MEMBER_SAFETY],
+        )
+        diagnostics = host.jev_diagnostics()
+        assert diagnostics["enabled_tasks"] == []
+        assert diagnostics["configured_unwired_tasks"] == [TASK_GROUP_MEMBER_SAFETY]
+
     def test_disabled_mixin_returns_none_without_network(self):
         host = _mixin_host(enable_jev_decision=False, jev_api_key="apikey_x")
         result = _run(host._jev_noul(task=TASK_GROUP_FOLLOWUP, state="s", instructions="i"))
@@ -786,6 +879,7 @@ class TestPluginMixin:
             master_enabled=True,
             enabled_tasks=[TASK_GROUP_FOLLOWUP],
         )
+        host._jev_warmup_attempted = True
         host._jev_count_toward_limit = True
         result = _run(host._jev_noul(task=TASK_GROUP_FOLLOWUP, state="s", instructions="i"))
         assert result is True
@@ -815,9 +909,106 @@ class TestPluginMixin:
             master_enabled=True,
             enabled_tasks=[TASK_GROUP_FOLLOWUP],
         )
+        host._jev_warmup_attempted = True
         host._jev_count_toward_limit = True
         assert _run(host._jev_noul(task=TASK_GROUP_FOLLOWUP, state="s", instructions="i")) is None
         assert recorded == []
+
+    def test_first_decision_waits_for_background_warmup_without_racing_it(self):
+        class WarmClient(_FakeClient):
+            def __init__(self):
+                super().__init__([_noul_result(0.95)])
+                self.warmups = 0
+
+            async def warmup(self, *, timeout=None):
+                self.warmups += 1
+                await asyncio.sleep(0)
+                return JevResult(
+                    ok=True,
+                    usage={"input_tokens": 4, "output_tokens": 1, "total_tokens": 5},
+                )
+
+        async def scenario():
+            host = _mixin_host(enable_jev_decision=True, jev_api_key="apikey_x")
+            client = WarmClient()
+            host._jev_gate_obj = JevGate(
+                client=client,
+                master_enabled=True,
+                enabled_tasks=[TASK_GROUP_FOLLOWUP],
+            )
+
+            first = await host._jev_noul(
+                task=TASK_GROUP_FOLLOWUP,
+                state="first",
+                instructions="i",
+            )
+            assert first is None
+            assert client.calls == []
+
+            warmup = host._jev_warmup_task
+            assert isinstance(warmup, asyncio.Task)
+            await warmup
+            second = await host._jev_noul(
+                task=TASK_GROUP_FOLLOWUP,
+                state="second",
+                instructions="i",
+            )
+            assert second is True
+            assert client.warmups == 1
+            assert len(client.calls) == 1
+            assert [entry["task"] for entry in host.recorded] == [
+                "jev_warmup",
+                f"jev_{TASK_GROUP_FOLLOWUP}",
+            ]
+
+        _run(scenario())
+
+    def test_concurrent_decisions_charge_each_request_exactly_once(self):
+        class ConcurrentClient(_FakeClient):
+            def __init__(self):
+                result = _noul_result(
+                    0.95,
+                    usage={"input_tokens": 7, "output_tokens": 3, "total_tokens": 10},
+                )
+                super().__init__([result, result])
+                self.started = 0
+                self.release = asyncio.Event()
+
+            async def noul(
+                self,
+                state,
+                instructions,
+                *,
+                true_hint="",
+                false_hint="",
+                question_id="q",
+                timeout=None,
+            ):
+                self.calls.append(("noul", question_id, state))
+                self.started += 1
+                if self.started == 2:
+                    self.release.set()
+                await self.release.wait()
+                return self._next()
+
+        async def scenario():
+            host = _mixin_host(enable_jev_decision=True, jev_api_key="apikey_x")
+            host._jev_gate_obj = JevGate(
+                client=ConcurrentClient(),
+                master_enabled=True,
+                enabled_tasks=[TASK_GROUP_FOLLOWUP],
+            )
+            host._jev_warmup_attempted = True
+            decisions = await asyncio.gather(
+                host._jev_noul(task=TASK_GROUP_FOLLOWUP, state="one", instructions="i"),
+                host._jev_noul(task=TASK_GROUP_FOLLOWUP, state="two", instructions="i"),
+            )
+            assert decisions == [True, True]
+            charged = [entry["resp"].usage["total_tokens"] for entry in host.recorded]
+            assert charged == [10, 10]
+            assert sum(charged) == 20
+
+        _run(scenario())
 
     def test_usage_shim_matches_token_budget_parser(self):
         """Verify the shim against the real ledger parser when it is importable."""
@@ -855,6 +1046,17 @@ class TestWiringGuards:
         assert "self.enable_jev_decision" in source
         assert "self.jev_endpoint_kind" in source
         assert "_initialize_jev_config(self, c)" in source
+
+    def test_page_hot_applies_jev_config_and_exposes_diagnostics(self):
+        source = (ROOT / "page_api.py").read_text(encoding="utf-8")
+        assert "JEV_RUNTIME_SETTING_KEYS" in source
+        assert "reload_jev()" in source
+        assert '"jev": section(' in source
+
+    def test_post_runtime_bootstrap_retries_warmup(self):
+        source = (ROOT / "plugin_bootstrap.py").read_text(encoding="utf-8")
+        assert "self._jev_runtime_ready = True" in source
+        assert "jev_warm(jev_gate())" in source
 
     def test_group_wakeup_no_longer_blocks_the_event_loop(self):
         """The old path called urllib synchronously inside an async handler."""

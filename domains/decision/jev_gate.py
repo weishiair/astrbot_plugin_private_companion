@@ -12,12 +12,16 @@ from __future__ import annotations
 
 import time
 from collections import deque
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
 from .jev_engine import JevClient, JevResult
 from .jev_primitives import JevAnswer
-from .jev_tasks import JevTaskSpec, resolve_enabled_tasks, task_spec
+from .jev_tasks import WIRED_JEV_TASKS, JevTaskSpec, resolve_enabled_tasks, task_spec
+
+
+JevResultObserver = Callable[[str, str, JevResult], None]
 
 
 @dataclass
@@ -67,10 +71,14 @@ class JevGate:
         enabled_tasks: Any = None,
         master_enabled: bool = False,
         audit_limit: int = 200,
+        result_observer: JevResultObserver | None = None,
+        wired_tasks: Iterable[str] | None = None,
     ) -> None:
         self.client = client or JevClient()
         self.master_enabled = bool(master_enabled)
-        self._enabled_tasks = resolve_enabled_tasks(enabled_tasks)
+        self._configured_tasks = resolve_enabled_tasks(enabled_tasks)
+        self._wired_tasks = frozenset(WIRED_JEV_TASKS if wired_tasks is None else wired_tasks)
+        self.result_observer = result_observer
         self._threshold_overrides: dict[str, float] = {}
         self._audit: deque[JevAuditEntry] = deque(maxlen=max(20, int(audit_limit)))
         # Circuit breaker state.
@@ -97,7 +105,15 @@ class JevGate:
 
     @property
     def enabled_tasks(self) -> list[str]:
-        return list(self._enabled_tasks)
+        return [task for task in self._configured_tasks if task in self._wired_tasks]
+
+    @property
+    def configured_tasks(self) -> list[str]:
+        return list(self._configured_tasks)
+
+    @property
+    def configured_unwired_tasks(self) -> list[str]:
+        return [task for task in self._configured_tasks if task not in self._wired_tasks]
 
     @property
     def threshold_overrides(self) -> dict[str, float]:
@@ -115,7 +131,7 @@ class JevGate:
         if master_enabled is not None:
             self.master_enabled = bool(master_enabled)
         if enabled_tasks is not None:
-            self._enabled_tasks = resolve_enabled_tasks(enabled_tasks)
+            self._configured_tasks = resolve_enabled_tasks(enabled_tasks)
         if threshold_overrides is not None:
             self._threshold_overrides = self._coerce_overrides(threshold_overrides)
         if fail_threshold is not None:
@@ -153,7 +169,11 @@ class JevGate:
         return result
 
     def is_task_enabled(self, task: str) -> bool:
-        return bool(self.master_enabled) and task in self._enabled_tasks
+        return (
+            bool(self.master_enabled)
+            and task in self._configured_tasks
+            and task in self._wired_tasks
+        )
 
     def threshold_for(self, spec: JevTaskSpec) -> float:
         return float(self._threshold_overrides.get(spec.task, spec.threshold))
@@ -196,6 +216,25 @@ class JevGate:
         for key in self._usage_totals:
             self._usage_totals[key] += int(usage.get(key, 0) or 0)
 
+    def record_result_usage(self, task: str, state: str, result: JevResult) -> None:
+        """Record one response exactly once and notify the plugin ledger.
+
+        The observer receives the per-request result instead of a delta from
+        cumulative counters. That distinction matters when decisions overlap:
+        global before/after snapshots race and can charge another request twice.
+        """
+        if not isinstance(result, JevResult):
+            return
+        if result.usage:
+            self._accumulate_usage(result.usage)
+        observer = self.result_observer
+        if callable(observer):
+            try:
+                observer(str(task or ""), str(state or ""), result)
+            except Exception:
+                # Accounting is observability; it must never change a decision.
+                pass
+
     # ------------------------------------------------------------------
     # 审计
     # ------------------------------------------------------------------
@@ -217,7 +256,9 @@ class JevGate:
             "endpoint": self.client.profile.describe(),
             "endpoint_reason": self.client.profile.reason,
             "timeout_seconds": round(self.client.timeout, 2),
-            "enabled_tasks": list(self._enabled_tasks),
+            "enabled_tasks": self.enabled_tasks,
+            "configured_tasks": self.configured_tasks,
+            "configured_unwired_tasks": self.configured_unwired_tasks,
             "threshold_overrides": dict(self._threshold_overrides),
             "totals": totals,
             "usage": dict(self._usage_totals),
@@ -283,6 +324,7 @@ class JevGate:
             question_id=question_id,
             timeout=timeout if timeout is not None else spec.budget_seconds,
         )
+        self.record_result_usage(task, state, result)
         answer = result.get(question_id) if result.ok else None
         probability = answer.probability if answer else None
 
@@ -298,13 +340,13 @@ class JevGate:
                     elapsed_ms=result.elapsed_ms,
                     reason=result.error or "no_answer",
                     threshold=threshold,
+                    usage=result.usage,
                     fallback="llm",
                 )
             )
             return None
 
         self._record_success()
-        self._accumulate_usage(result.usage)
         confidence = answer.confidence if answer else None
         decision = probability >= threshold
         below_floor = floor > 0 and max(probability, 1.0 - probability) < floor
@@ -384,6 +426,7 @@ class JevGate:
             question_id=question_id,
             timeout=timeout if timeout is not None else spec.budget_seconds,
         )
+        self.record_result_usage(task, state, result)
         answer: JevAnswer | None = result.get(question_id) if result.ok else None
         label = answer.label if answer is not None else None
 
@@ -397,6 +440,7 @@ class JevGate:
                     decision="error",
                     elapsed_ms=result.elapsed_ms,
                     reason=result.error or "no_label",
+                    usage=result.usage,
                     fallback="llm",
                 )
             )
@@ -404,7 +448,6 @@ class JevGate:
 
         if allowed and label not in allowed:
             self._record_success()
-            self._accumulate_usage(result.usage)
             self._append_audit(
                 JevAuditEntry(
                     ts=time.time(),
@@ -422,7 +465,6 @@ class JevGate:
             return None
 
         self._record_success()
-        self._accumulate_usage(result.usage)
         confidence = answer.confidence if answer else None
         below_floor = floor > 0 and (confidence is None or confidence < floor)
         self._append_audit(
@@ -496,6 +538,7 @@ class JevGate:
             question_id=question_id,
             timeout=timeout if timeout is not None else spec.budget_seconds,
         )
+        self.record_result_usage(task, state, result)
         answer: JevAnswer | None = result.get(question_id) if result.ok else None
         score = answer.score_100 if answer is not None else None
 
@@ -509,13 +552,13 @@ class JevGate:
                     decision="error",
                     elapsed_ms=result.elapsed_ms,
                     reason=result.error or "no_score",
+                    usage=result.usage,
                     fallback="llm",
                 )
             )
             return None
 
         self._record_success()
-        self._accumulate_usage(result.usage)
         confidence = answer.confidence if answer else None
         below_floor = floor > 0 and (confidence is None or confidence < floor)
         self._append_audit(
@@ -543,4 +586,4 @@ class JevGate:
         return score
 
 
-__all__ = ["JevAuditEntry", "JevGate"]
+__all__ = ["JevAuditEntry", "JevGate", "JevResultObserver"]

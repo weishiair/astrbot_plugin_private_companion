@@ -2366,3 +2366,14 @@ def initialize_plugin_post_runtime_state(self: Any, config: Any) -> None:
     }
     self._req041_scoped_sync_task = None
     self._req041_scoped_sync_requested = False
+    # Config bootstrap can run before the framework installs an event loop.
+    # Retry JEV warmup here, once the plugin runtime has been assembled, so the
+    # first user message never has to race a cold DNS/TLS probe.
+    jev_gate = getattr(self, "_jev_gate", None)
+    jev_warm = getattr(self, "_jev_ensure_warm", None)
+    self._jev_runtime_ready = True
+    if callable(jev_gate) and callable(jev_warm):
+        try:
+            jev_warm(jev_gate())
+        except Exception:
+            pass

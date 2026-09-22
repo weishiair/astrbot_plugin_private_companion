@@ -415,6 +415,20 @@ class PrivateCompanionPageApi(
         "backup_external_image_api_timeout_seconds",
         "backup_external_image_api_custom_headers",
     }
+    JEV_RUNTIME_SETTING_KEYS = {
+        "enable_jev_decision",
+        "jev_api_key",
+        "jev_endpoint_kind",
+        "jev_gateway_url",
+        "jev_model",
+        "jev_timeout_seconds",
+        "jev_max_concurrency",
+        "jev_enabled_tasks",
+        "jev_threshold_overrides",
+        "jev_fail_threshold",
+        "jev_fail_open_seconds",
+        "jev_count_toward_token_limit",
+    }
 
     PERCENT_PROBABILITY_KEYS = {
         "group_repeat_follow_probability",
@@ -1977,6 +1991,11 @@ class PrivateCompanionPageApi(
                 "daily_timeline": section("daily_timeline", lambda: self._daily_timeline_summary(data), {}),
                 "daily_outfit": section("daily_outfit", lambda: self._daily_outfit_summary(data), {}),
                 "token_stats": token_stats,
+                "jev": section(
+                    "jev",
+                    getattr(self.plugin, "jev_diagnostics", lambda: {"enabled": False, "active": False}),
+                    {"enabled": False, "active": False},
+                ),
                 "multi_persona": section(
                     "multi_persona",
                     getattr(self.plugin, "_multi_persona_status", lambda: {"enabled": False}),
@@ -6065,6 +6084,10 @@ class PrivateCompanionPageApi(
             else:
                 for key, value in changed.items():
                     self._apply_config_value(key, value, apply_overrides)
+            if self.JEV_RUNTIME_SETTING_KEYS & set(changed):
+                reload_jev = getattr(self.plugin, "_jev_reload", None)
+                if callable(reload_jev):
+                    reload_jev()
             if apply_overrides.get("__relationship_profile_batch"):
                 try:
                     await self._apply_relationship_profile_config_batch(apply_overrides)

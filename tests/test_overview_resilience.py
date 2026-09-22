@@ -29,6 +29,10 @@ class _OverviewPlugin:
     def _roleplay_knowledge_summary() -> dict:
         return {"available": True}
 
+    @staticmethod
+    def jev_diagnostics() -> dict:
+        return {"enabled": True, "active": True, "warmed": True}
+
 
 def test_overview_survives_one_broken_optional_section() -> None:
     api = PrivateCompanionPageApi(_OverviewPlugin())
@@ -92,6 +96,7 @@ def test_overview_survives_one_broken_optional_section() -> None:
     overview = result["data"]
     assert overview["livingmemory"] == {}
     assert overview["news"] == {"available": True}
+    assert overview["jev"] == {"enabled": True, "active": True, "warmed": True}
     assert overview["overview_health"] == {
         "degraded": True,
         "sections": ["livingmemory"],

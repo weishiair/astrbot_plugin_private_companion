@@ -56,13 +56,13 @@ URL 与凭据属于不同端点族时，**以凭据为准并忽略该 URL**，�
 | 复用长连接（中位数，8 次实测 251–305ms） | ~0.26s |
 | 冷启动首次建连 | ~1.8s |
 
-冷启动建连远超判定预算，因此插件启动与每次配置变更后执行一次 `warmup()` 把该成本移出消息链路。并发由信号量约束，避免上游被打满后集体超时。
+冷启动建连远超判定预算，因此插件启动与每次配置变更后执行一次 `warmup()` 把该成本移出消息链路。热身任务有唯一 owner，配置重载或插件卸载时会取消并等待清理；热身进行期间的新消息直接走原模型，不会让探测请求与第一条真实判定并发争抢冷连接。热身成功产生的 Token 也以 `jev_warmup` 进入账本。并发由信号量约束，运行时修改 `jev_max_concurrency` 会重建连接池和信号量。
 
 旧实现用 `urllib` 在 `async def handle_group_message` 链路内同步直连，每次判定冻结事件循环一整个往返，这是必须改为异步的直接原因。
 
 ## 5. 任务注册表与回落语义
 
-可委托的任务登记在 `JEV_TASKS`，每项声明原语、默认启停、阈值、置信度下限与预算秒数。默认启用四项：`group_followup_judge`、`group_air_reply_guard`、`smart_silence`、`group_interject`。
+可委托的任务登记在 `JEV_TASKS`，每项声明原语、默认启停、运行时是否已接线、阈值、置信度下限与预算秒数。默认启用且已接线的四项是：`group_followup_judge`、`group_air_reply_guard`、`smart_silence`、`group_interject`。`jev_enabled_tasks` 留空（包括 Schema 下发的空列表）时使用这四项默认值；非空但全是未知值时仍保持空集合，避免误开放委托面。
 
 统一的回落契约是 **返回 `None` 表示"照原路径走"**：
 
@@ -86,15 +86,15 @@ URL 与凭据属于不同端点族时，**以凭据为准并忽略该 URL**，�
 
 续接判断的 JEV 调用位于提供商检查**之前**，因此未配置判定模型的群也能受益——原实现在无模型时直接返回 `None` 走规则，属常见配置。
 
-`group_wakeup_context` 在注册表中但尚未接线：其判定需由调用方预先计算后传入 `_evaluate_group_wakeup(jev_context_verdict=...)`，目前没有生产者。该任务默认关闭，因此无实际影响。
+其余六项 `group_member_safety`、`rest_wakeup_judge`、`group_wakeup_context`、`smart_message_debounce`、`proactive_persona_judge`、`emotion_judgement` 仅保留为未来接线的注册项。闸门会对这些未接线任务 fail closed：即使误填进配置也不会发起网络请求；诊断中的 `configured_unwired_tasks` 会明确列出它们。
 
 ## 6. 熔断、审计与记账
 
 连续失败达到 `jev_fail_threshold` 后暂停调用 `jev_fail_open_seconds`，避免 JEV 故障时每条消息都白等一个超时。
 
-每次尝试记录任务、判定、概率、阈值、耗时、用量与回落原因。审计中 `decision` 记录 JEV 的原始回答，`reason` 记录闸门为何覆盖它，两者在审计文本中必须可区分——早期版本只写"低置信度回落"，与 `decision=reply` 并列时读起来自相矛盾，现改为写明具体数值。
+每次尝试记录任务、判定、概率、阈值、耗时、用量与回落原因。审计中 `decision` 记录 JEV 的原始回答，`reason` 记录闸门为何覆盖它，两者在审计文本中必须可区分——早期版本只写"低置信度回落"，与 `decision=reply` 并列时读起来自相矛盾，现改为写明具体数值。总览接口还暴露安全裁剪后的 JEV 诊断（不含 Key、URL 用户信息、查询串或片段）。
 
-Token 用量并入插件既有账本，`provider_id` 为 `jev:systemone`，受日硬限额约束；`jev_count_toward_token_limit` 关闭时不参与限额但仍记账。
+Token 用量并入插件既有账本，`provider_id` 为 `jev:systemone`，受日硬限额约束；`jev_count_toward_token_limit` 关闭时不参与限额但仍记账。记账直接消费每个 `JevResult` 的用量，不再用全局累计值做前后差，因此并发判定不会把另一请求重复计费。
 
 ## 7. 配置项
 
@@ -113,6 +113,6 @@ Token 用量并入插件既有账本，`provider_id` 为 `jev:systemone`，受�
 | `domains/decision/jev_gate.py` | 545 | 启停、阈值、熔断、审计 |
 | `jev_decision.py` | 362 | 插件侧接线：配置读取、记账、诊断 |
 
-`tests/test_jev_decision.py` 79 例**离线运行**，不依赖 AstrBot、不访问网络、不消耗额度：闸门测试注入脚本化假客户端，端点解析为纯函数。覆盖端点适配（含凭据与 URL 冲突）、三原语契约与解析容错、闸门策略、熔断、审计文本、Token 记账形状，以及接线守卫（静态断言配置加载器存在、`group_wakeup` 不再同步直连、引擎不再导入 `urllib`）。
+`tests/test_jev_decision.py` 90 例**离线运行**，不依赖 AstrBot、不访问网络、不消耗额度：闸门测试注入脚本化假客户端，端点解析为纯函数。覆盖端点适配（含凭据与 URL 冲突）、三原语契约与解析容错、闸门策略、熔断、热身生命周期、并发精确记账、未接线任务 fail closed、诊断安全，以及接线守卫（静态断言配置加载器存在、`group_wakeup` 不再同步直连、引擎不再导入 `urllib`）。
 
 需真实端点的联调不在该文件内，避免 CI 依赖网络与密钥。
