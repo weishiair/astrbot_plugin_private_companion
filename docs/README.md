@@ -18,6 +18,7 @@ HDSI 的持续剧本、overlay、alter、自动推进和共用世界已作为拟
 | 世界模拟、日程和拟真生活 | [架构基线 §3.7](./ARCHITECTURE_RESET.md#37-日历和日程) | [日历契约包](./contracts/calendar/v1/README.md)、[世界契约包](./contracts/world/v1/README.md)、[世界状态机 §7--§11](./DOMAIN_STATE_MACHINES_V0.md#7-世界模拟纵向切片学习被打断与跨会话恢复)、[外部参考汇总](./EXTERNAL_REFERENCE_REVIEWS.md) |
 | 角色回复、情绪、关系和主动 | [角色/主动蓝图](./ROLEPLAY_PROACTIVE_REBUILD.md) | [角色决策契约包](./contracts/decision/v1/README.md)、[状态事件闭环](./COMPANION_STATE_EVENT_FEEDBACK_DESIGN.md)、[Prompt 设计](./PROMPT_SURFACE_REVIEW.md) |
 | 插件注册、绑定、取消和恢复 | [生命周期](./COMPANION_EXTENSION_LIFECYCLE_V0.md) | [控制契约包](./contracts/control/v1/README.md)、[执行契约包](./contracts/execution/v1/README.md) |
+| 判定类任务如何省掉小模型调用 | [JEV 判定委托](./jev-decision-delegation.md) | [完整工作原理 §20.18](./WORKING_PRINCIPLES.md) |
 | 平台迁移和一站式打包 | [平台可移植设计](./PLATFORM_PORTABILITY_AND_BUNDLING_V0.md) | [Canonical Fixture/SDK](./PORTABLE_CANONICAL_FIXTURE_AND_SDK_V0.md) |
 | 现有插件能力和迁移风险 | [现有插件审计](./EXISTING_PLUGIN_AUDIT.md) | [设计与代码对照](./DESIGN_VS_EXISTING_PLUGIN_AUDIT_20260907.md) |
 

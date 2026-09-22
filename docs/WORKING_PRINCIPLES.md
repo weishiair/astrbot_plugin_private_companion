@@ -128,6 +128,7 @@ PLUGIN_DATA_DIRECTORY_KEY = PLUGIN_ID
 | **扩展 API** | `extension_api_*.py` | 8 个 Capability Family |
 | **配置 / 迁移** | `config_migration.py`、`migration_*.py`、`constants.py` | 30+ 配置章节 / 5 大迁移模块 |
 | **情绪 / 社交领域** | `domains/affect/*`、`domains/social/*` | 情感事件 / 群聊名场面 / 接梗边界 |
+| **决策领域（JEV）** | `domains/decision/*`、`jev_decision.py` | 判定委托 / 端点自动适配 / 熔断与审计 |
 | **其他能力** | `body_monitor_integration.py`、`balance_awareness.py`、`forward_message.py`、`atrelay.py`、`debug_runtime.py`、`logging_util.py`、`runtime_compat.py` 等 | 设备联动 / 余额感知 / 合并转发 / @ 中继 |
 
 ### 1.3 子目录速查
@@ -141,7 +142,7 @@ PLUGIN_DATA_DIRECTORY_KEY = PLUGIN_ID
 | `data/` | `cmd_config.json`、插件数据、`t2i_templates`、临时缓存 |
 | `dist/` | `build_plugin_package.py` 输出的发布 ZIP |
 | `docs/` | 设计文档（**本文档也归入此处**） |
-| `domains/` | 领域拆分（`affect` / `social`） |
+| `domains/` | 领域拆分（`affect` / `social` / `decision`） |
 | `pages/companion-panel/` 与 `pages/陪伴面板/` | 陪伴面板前端资源（HTML/JS/CSS） |
 | `scripts/` | `build_plugin_package.py`（打包）、`ci_static_checks.py`（CI） |
 | `storage/` | `backend_base.py`、`factory.py`、`json_backend.py`、`sqlite_backend.py`、`store_manager.py`、`path_generation.py`、`migration.py` |
@@ -243,6 +244,7 @@ class PrivateCompanionPlugin(
 | `TtsToolSanitizerMixin` | `tts_tool_sanitizer.py` | TTS 工具历史脱敏 |
 | `RealityCompanionBridgeMixin` | `body_monitor_integration.py`（含现实触及桥接） | 现实设备联动桥 |
 | `GroupWakeupMixin` | `group_wakeup.py` | 群聊唤醒 / 续接 |
+| `JevDecisionMixin` | `jev_decision.py` | JEV 判定委托：配置读取 / 闸门缓存 / 预热 / Token 记账 / 诊断 |
 | `GroupObservationMixin` | `group_observation.py` | 群聊观察 / 群友 / 黑话 / 话题 |
 | `GroupMemberSafetyMixin` | `group_member_safety.py` | 群成员安全审核 |
 | `EventDispatchMixin` | `event_dispatch.py` | 事件分发 / 去抖 / 模型替换 |
@@ -1225,12 +1227,14 @@ EMOTION_EVENT_SCHEMA_VERSION = "companion_emotion_event.v1"
 
 - 用户叫过 Bot 后，判断后续未继续 @ 的消息是否仍在对 Bot 说话
 - 限制连续轮数（`group_conversation_followup_seconds` / `max_turns`）
+- 判定可选委托 JEV（`group_followup_judge`，默认启用）：先走 JEV，不确定或不可用时回落原模型判定或规则。JEV 调用位于提供商检查之前，因此未配置判定模型的群也能受益
 
 ### 15.4 插话（`group_interjection`）
 
 - 按概率（`group_interjection_min_interval` / `group_interjection_max_daily`）、冷却、每日上限、场景、关系边界
 - 高强度模式：`enable_group_high_intensity_mode` + `merge_seconds` + `max_merge_messages` + `merge_scope=group|same_user`
 - 重复续接：`enable_group_repeat_follow` + `group_repeat_follow_*`
+- "要不要插话"可委托 JEV（`group_interject`，默认启用）；**插话正文仍由原模型生成**，JEV 只返回是否插话的结论
 
 ### 15.5 群成员安全（`group_member_safety.py`）
 
@@ -1239,6 +1243,7 @@ EMOTION_EVENT_SCHEMA_VERSION = "companion_emotion_event.v1"
 - `strike_threshold` + `window_days` + `block_hours` + `min_confidence`
 - `exempt_managers` + `audit_limit`
 - 触发：`review_group_member_safety_early`（priority 190000）提前审核
+- JEV 任务 `group_member_safety` 已注册但**默认关闭**：风控误判代价高（漏判骚扰 vs 误禁正常群友），建议先在面板比对结论再启用
 
 ### 15.6 群聊上下文注入
 
@@ -1805,6 +1810,16 @@ _ContentStoryModelBudget.max = 8
 注入形态四选一：`wardrobe_injection_detail`（full / progressive）× `wardrobe_outfit_mode`（select / inventory）；权威顺序为 **本会话明确换装**（复用作者的 `dialogue_outfit_override`）> 当天裁决 > 轮换兜底。
 离线工具见 `scripts/wardrobe_{import,understand,review,style_profile}.py`。
 
+### 20.18 Jev System One 判定委托 — 6 个文件
+
+分成五层：**端点层**（`domains/decision/jev_endpoint.py`：端点画像与自动适配，按密钥前缀 `apikey_`/`vck_` 选择 TypeSafe 官方或 Vercel 网关，凭据与 URL 冲突时以凭据为准）、**原语层**（`domains/decision/jev_primitives.py`：noul / choice / score 的构造与容错解析）、**引擎层**（`domains/decision/jev_engine.py`：异步 aiohttp 客户端，连接复用 + 预热 + 信号量，错误信息可执行）、**任务层**（`domains/decision/jev_tasks.py`：10 个可委托任务的注册表）、**闸门层**（`domains/decision/jev_gate.py`：启停 / 阈值 / 置信度下限 / 熔断 / 审计），插件侧接线在根目录 `jev_decision.py`。
+
+核心约束是**判断与生成分离**：JEV 只回答离散结论，凡需产出自然语言的环节仍由原模型完成（插话只接管"要不要说"，正文仍由模型生成）。统一回落契约为返回 `None` 即"照原路径走"，与判定为否的 `False` 严格区分。
+
+延迟是能否用于低延迟判断的前提：每次新建连接 ~900ms，复用长连接 ~0.26s，冷启动建连 ~1.8s 故需启动预热。旧实现在 `async def handle_group_message` 链路内用 `urllib` 同步直连，每次判定冻结事件循环一整个往返，这是改为异步的直接原因。
+
+判定依据可放进 `state` 文本才可迁移，因此视觉判定不迁移；零成本的逻辑（线索词唤醒的正则、出站重复检查的哈希）也不迁移，交给 JEV 反而增加开销。Token 用量并入既有账本（`provider_id` 为 `jev:systemone`）。详见 [Jev System One 判定委托](./jev-decision-delegation.md)。
+
 ---
 
 ## 21. 陪伴面板（`page_api.py`，31 111 行）
@@ -2220,6 +2235,15 @@ domains/social/group_mood.py                         262
 domains/social/joke_boundary.py                      269
 domains/social/roleplay_strength.py                  128
 
+# 决策领域（JEV）
+domains/decision/__init__.py                         92
+domains/decision/jev_endpoint.py                    194
+domains/decision/jev_primitives.py                  247
+domains/decision/jev_engine.py                      519
+domains/decision/jev_tasks.py                       229
+domains/decision/jev_gate.py                        545
+jev_decision.py                                     362
+
 # 其他能力
 body_monitor_integration.py                      (~)
 balance_awareness.py                            32 053 bytes
@@ -2243,6 +2267,7 @@ runtime_compat.py                               (~)
 - **想理解消息怎么流过插件** → §7、§8、§9
 - **想理解"主动消息是怎么生成的"** → §10
 - **想理解 Bot 的"状态/日程/关系"** → §11、§12、§13、§14
+- **想理解判定类任务如何省掉小模型调用** → §20.18、[JEV 判定委托](./jev-decision-delegation.md)
 - **想理解群聊特殊能力** → §15
 - **想给插件加命令 / 工具** → §16、§17
 - **想集成其他 AstrBot 插件** → §18、§19

@@ -4032,6 +4032,51 @@ class GroupObservationMixin:
             return (False, "", "review_meta_leak")
         return (bool(should_reply and reply), reply if should_reply else "", _single_line(payload.get("reason"), 80))
 
+    async def _group_interject_jev_prefilter(
+        self,
+        *,
+        group: dict[str, Any],
+        text: str,
+    ) -> bool | None:
+        """Ask JEV whether interjecting right now is worth it.
+
+        Returns ``False`` only when JEV is confident the bot should stay out,
+        which lets the caller skip a 140-token generation call entirely. Returns
+        ``None`` (proceed with the original model path) whenever JEV is off,
+        unavailable, or unsure — so the decision never gets worse than before.
+
+        Only the cheap local signals already loaded in ``group`` are projected;
+        the memory-companion recall that the full prompt performs is
+        deliberately left to the model path, because it costs a round trip that
+        the prefilter is trying to avoid.
+        """
+        judge = getattr(self, "_jev_noul", None)
+        if not callable(judge):
+            return None
+        mood = _single_line(group.get("group_mood_label") or group.get("mood") or "", 40)
+        topic = _single_line(group.get("last_topic") or group.get("topic") or "", 120)
+        last_interject = group.get("last_bot_interjection")
+        last_note = ""
+        if isinstance(last_interject, dict):
+            last_note = _single_line(last_interject.get("text"), 100)
+        state = (
+            f"群聊正在讨论：{topic or '（未记录）'}\n"
+            f"群气氛：{mood or '（未记录）'}\n"
+            f"最新一条群消息：{_single_line(text, 300)}\n"
+            f"Bot 上一次插话：{last_note or '（本次会话内无）'}"
+        )
+        try:
+            return await judge(
+                task="group_interject",
+                state=state,
+                instructions="Bot 此刻主动插话是否自然、是否会给群友带来价值？",
+                true_hint="适合插话：话题开放、Bot 有可分享的相关内容，插入不会打断他人对话",
+                false_hint="不该插话：话题正在私人对话中，或 Bot 插入会显得突兀、打断当前交流",
+            )
+        except Exception as exc:
+            logger.debug("JEV 插话前置判断失败，回落到模型: %s", _single_line(exc, 120))
+            return None
+
     def _group_interjection_allowed(self, group: dict[str, Any], text: str) -> tuple[bool, str]:
         if not _persona_value(self, "enable_group_interjection", False):
             return False, "群聊主动插话未开启"
@@ -4743,6 +4788,15 @@ class GroupObservationMixin:
             return
         allowed, reason = self._group_interjection_allowed(group, text)
         if not allowed:
+            return
+        # JEV 前置过滤：插话决策与正文原本由同一次 140 token 调用产出，无法只接管
+        # 决策。改为先用 JEV 判"此刻是否适合插话"，判定不适合时直接返回，省掉这次
+        # 调用；判定适合或 JEV 不可用时照原路径继续，由模型产出正文。
+        jev_prefilter = await self._group_interject_jev_prefilter(
+            group=group,
+            text=text,
+        )
+        if jev_prefilter is False:
             return
         memory_context = ""
         composer = getattr(self, "_memory_companion_compose_feature_context", None)
