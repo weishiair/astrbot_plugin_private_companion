@@ -92,6 +92,9 @@ class _MainReadersHarness:
             "rest_reply_llm_threshold": 65,
         }
         self.provider_calls: list[str] = []
+        self.jev_calls: list[dict[str, Any]] = []
+        self.jev_decision: bool | None = None
+        self.jev_error: Exception | None = None
 
     def persona_setting(self, key: str, default: Any = None) -> Any:
         return self.values.get(key, getattr(self, key, default))
@@ -116,6 +119,12 @@ class _MainReadersHarness:
         self.provider_calls.append(provider_id)
         return '{"decision":"send","reason":"ok","score":80,"should_reply":true}'
 
+    async def _jev_noul(self, **kwargs: Any) -> bool | None:
+        self.jev_calls.append(dict(kwargs))
+        if self.jev_error is not None:
+            raise self.jev_error
+        return self.jev_decision
+
     @staticmethod
     def _parse_json_object(value: str) -> dict[str, Any]:
         return json.loads(value)
@@ -126,6 +135,15 @@ class _MainReadersHarness:
 
 
 class PersonaRuntimeMainReadersTests(unittest.TestCase):
+    @staticmethod
+    def _group_event() -> SimpleNamespace:
+        return SimpleNamespace(
+            private_companion_group_scene={"trigger": "group_wakeup_question", "reason": "test"},
+            private_companion_group_text="有人会吗",
+            message_str="有人会吗",
+            get_sender_id=lambda: "member-1",
+        )
+
     def test_voice_prompt_uses_active_persona_value(self) -> None:
         harness = _MainReadersHarness()
         text = harness._format_persona_voice_channel_prompt("conversation")
@@ -135,12 +153,7 @@ class PersonaRuntimeMainReadersTests(unittest.TestCase):
 
     def test_group_and_rest_review_use_active_persona_providers(self) -> None:
         harness = _MainReadersHarness()
-        event = SimpleNamespace(
-            private_companion_group_scene={"trigger": "group_wakeup_question", "reason": "test"},
-            private_companion_group_text="有人会吗",
-            message_str="有人会吗",
-            get_sender_id=lambda: "member-1",
-        )
+        event = self._group_event()
 
         review = asyncio.run(
             harness._review_group_question_wakeup_reply_before_send(event, reply_text="我可以帮忙")
@@ -157,6 +170,62 @@ class PersonaRuntimeMainReadersTests(unittest.TestCase):
         self.assertEqual("send", review["decision"])
         self.assertEqual(80, score)
         self.assertEqual(["persona-review", "persona-wake"], harness.provider_calls)
+        self.assertEqual("group_question_wakeup_reply_review", harness.jev_calls[0]["task"])
+
+    def test_group_question_review_jev_decisions_skip_model(self) -> None:
+        event = self._group_event()
+        for delegated, expected in ((True, "send"), (False, "drop")):
+            with self.subTest(delegated=delegated):
+                harness = _MainReadersHarness()
+                harness.jev_decision = delegated
+
+                result = asyncio.run(
+                    harness._review_group_question_wakeup_reply_before_send(
+                        event,
+                        reply_text="可以检查一下依赖版本",
+                    )
+                )
+
+                self.assertEqual(expected, result["decision"])
+                self.assertEqual([], harness.provider_calls)
+                self.assertEqual(1, len(harness.jev_calls))
+                call = harness.jev_calls[0]
+                self.assertEqual("group_question_wakeup_reply_review", call["task"])
+                self.assertIn("有人会吗", call["state"])
+                self.assertIn("可以检查一下依赖版本", call["state"])
+
+    def test_group_question_review_jev_runs_without_model_provider(self) -> None:
+        harness = _MainReadersHarness()
+        harness.jev_decision = False
+        harness.values.update(
+            response_review_provider_id="",
+            group_followup_judge_provider_id="",
+            mai_style_provider_id="",
+        )
+
+        result = asyncio.run(
+            harness._review_group_question_wakeup_reply_before_send(
+                self._group_event(),
+                reply_text="我来插一句",
+            )
+        )
+
+        self.assertEqual("drop", result["decision"])
+        self.assertEqual([], harness.provider_calls)
+
+    def test_group_question_review_jev_error_falls_back_to_model(self) -> None:
+        harness = _MainReadersHarness()
+        harness.jev_error = RuntimeError("offline")
+
+        result = asyncio.run(
+            harness._review_group_question_wakeup_reply_before_send(
+                self._group_event(),
+                reply_text="我可以帮忙",
+            )
+        )
+
+        self.assertEqual("send", result["decision"])
+        self.assertEqual(["persona-review"], harness.provider_calls)
 
 
 if __name__ == "__main__":

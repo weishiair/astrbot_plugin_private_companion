@@ -310,6 +310,15 @@ def _initialize_jev_config(self: Any, c: Any) -> None:
     self.jev_enabled_tasks = self._parse_text_list_config(
         self._cfg_raw(c, "jev_enabled_tasks", [])
     )
+    self.enable_jev_smart_message_debounce = self._cfg_bool(
+        c, "enable_jev_smart_message_debounce", False
+    )
+    self.enable_jev_rest_wakeup_judge = self._cfg_bool(
+        c, "enable_jev_rest_wakeup_judge", False
+    )
+    self.enable_jev_group_question_wakeup_reply_review = self._cfg_bool(
+        c, "enable_jev_group_question_wakeup_reply_review", False
+    )
     self.jev_threshold_overrides = self._cfg_str(c, "jev_threshold_overrides", "")
     self.jev_fail_threshold = self._cfg_int(c, "jev_fail_threshold", 3, 1, 50)
     self.jev_fail_open_seconds = self._cfg_float(c, "jev_fail_open_seconds", 90.0, 1.0)

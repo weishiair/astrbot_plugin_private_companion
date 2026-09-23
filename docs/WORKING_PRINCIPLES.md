@@ -1812,13 +1812,13 @@ _ContentStoryModelBudget.max = 8
 
 ### 20.18 Jev System One 判定委托 — 6 个文件
 
-分成五层：**端点层**（`domains/decision/jev_endpoint.py`：端点画像与自动适配，按密钥前缀 `apikey_`/`vck_` 选择 TypeSafe 官方或 Vercel 网关，凭据与 URL 冲突时以凭据为准）、**原语层**（`domains/decision/jev_primitives.py`：noul / choice / score 的构造与容错解析）、**引擎层**（`domains/decision/jev_engine.py`：异步 aiohttp 客户端，连接复用 + 预热 + 信号量，错误信息可执行）、**任务层**（`domains/decision/jev_tasks.py`：10 个可委托任务的注册表）、**闸门层**（`domains/decision/jev_gate.py`：启停 / 阈值 / 置信度下限 / 熔断 / 审计），插件侧接线在根目录 `jev_decision.py`。
+分成五层：**端点层**（`domains/decision/jev_endpoint.py`：端点画像与自动适配，按密钥前缀 `apikey_`/`vck_` 选择 TypeSafe 官方或 Vercel 网关，凭据与 URL 冲突时以凭据为准）、**原语层**（`domains/decision/jev_primitives.py`：noul / choice / score 的构造与容错解析）、**引擎层**（`domains/decision/jev_engine.py`：异步 aiohttp 客户端，连接复用 + 预热 + 信号量，错误信息可执行）、**任务层**（`domains/decision/jev_tasks.py`：11 个可委托任务的注册表）、**闸门层**（`domains/decision/jev_gate.py`：启停 / 阈值 / 置信度下限 / 熔断 / 审计），插件侧接线在根目录 `jev_decision.py`。
 
 核心约束是**判断与生成分离**：JEV 只回答离散结论，凡需产出自然语言的环节仍由原模型完成（插话只接管"要不要说"，正文仍由模型生成）。统一回落契约为返回 `None` 即"照原路径走"，与判定为否的 `False` 严格区分。
 
 延迟是能否用于低延迟判断的前提：每次新建连接 ~900ms，复用长连接 ~0.26s，冷启动建连 ~1.8s 故需启动预热。旧实现在 `async def handle_group_message` 链路内用 `urllib` 同步直连，每次判定冻结事件循环一整个往返，这是改为异步的直接原因。
 
-判定依据可放进 `state` 文本才可迁移，因此视觉判定不迁移；零成本的逻辑（线索词唤醒的正则、出站重复检查的哈希）也不迁移，交给 JEV 反而增加开销。Token 用量并入既有账本（`provider_id` 为 `jev:systemone`）。详见 [Jev System One 判定委托](./jev-decision-delegation.md)。
+判定依据可放进 `state` 文本才可迁移，因此视觉判定不迁移；零成本的逻辑（线索词唤醒的正则、出站重复检查的哈希）也不迁移，交给 JEV 反而增加开销。Token 用量并入既有账本（`provider_id` 为 `jev:systemone`）。三个默认关闭的已接线任务各有独立布尔开关，`jev_enabled_tasks` 只保留为高级兼容入口。原理与运行契约详见 [Jev System One 判定委托](./jev-decision-delegation.md)，候选场景、优先级和灰度要求见 [JEV 优化机会清单](./jev-optimization-opportunities.md)。
 
 ---
 
@@ -2267,7 +2267,7 @@ runtime_compat.py                               (~)
 - **想理解消息怎么流过插件** → §7、§8、§9
 - **想理解"主动消息是怎么生成的"** → §10
 - **想理解 Bot 的"状态/日程/关系"** → §11、§12、§13、§14
-- **想理解判定类任务如何省掉小模型调用** → §20.18、[JEV 判定委托](./jev-decision-delegation.md)
+- **想理解判定类任务如何省掉小模型调用** → §20.18、[JEV 判定委托](./jev-decision-delegation.md)、[JEV 优化机会清单](./jev-optimization-opportunities.md)
 - **想理解群聊特殊能力** → §15
 - **想给插件加命令 / 工具** → §16、§17
 - **想集成其他 AstrBot 插件** → §18、§19

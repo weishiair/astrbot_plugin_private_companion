@@ -849,10 +849,31 @@
         "hint": "默认 4。同时判定的消息过多时限流，避免上游变慢导致集体超时。",
         "default": 4
       },
+      "enable_jev_smart_message_debounce": {
+        "description": "JEV 智能收口判断",
+        "type": "bool",
+        "hint": "默认关闭。仅在本地规则无法确定消息是否说完时，用 JEV 替代原 80-token 小模型；不可用或不确定时自动回落。",
+        "default": false,
+        "condition": "enable_jev_decision"
+      },
+      "enable_jev_rest_wakeup_judge": {
+        "description": "JEV 休息唤醒判断",
+        "type": "bool",
+        "hint": "默认关闭。休息回复模式为 llm 时，用 JEV score 替代原 180-token 唤醒评分；不可用或不确定时自动回落。",
+        "default": false,
+        "condition": "enable_jev_decision"
+      },
+      "enable_jev_group_question_wakeup_reply_review": {
+        "description": "JEV 群答疑发送前复核",
+        "type": "bool",
+        "hint": "默认关闭。用 JEV 判断已经生成的群答疑回复应发送还是拦截，明确结论时省去原 120-token 复核；不可用或不确定时自动回落。",
+        "default": false,
+        "condition": "enable_jev_decision"
+      },
       "jev_enabled_tasks": {
-        "description": "交给 JEV 的判定任务",
+        "description": "交给 JEV 的判定任务（高级）",
         "type": "list",
-        "hint": "留空使用默认集合。当前已接线并可生效：group_followup_judge（续接判断）、group_air_reply_guard（沉默闸门）、smart_silence（智能沉默）、group_interject（插话判断）。其余注册项为预留能力，当前即使填写也不会发起请求。",
+        "hint": "高级兼容入口。留空使用四项默认集合；通常直接使用上方三个独立开关即可。手工填写的任务与独立开关取并集，因此旧配置继续生效；若曾在这里手工加入任务，关闭对应独立开关前也需要从此列表移除。未接线任务即使填写也不会发起请求。",
         "default": []
       },
       "jev_threshold_overrides": {

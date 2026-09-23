@@ -4622,6 +4622,31 @@ class EventDispatchMixin:
         )
         raw = ""
         model_error = ""
+        jev_decision: bool | None = None
+        jev_noul = getattr(self, "_jev_noul", None)
+        if callable(jev_noul):
+            try:
+                jev_decision = await jev_noul(
+                    task="smart_message_debounce",
+                    state=(
+                        f"会话类型：{'私聊' if private_chat else '群聊'}\n"
+                        f"用户：{_single_line(sender_name, 40) or _single_line(sender_id, 40)}\n"
+                        f"当前消息：{cleaned}\n"
+                        f"缓冲中的前文：{' / '.join(recent[-3:]) if recent else '无'}\n"
+                        f"已学习误判样本：{'；'.join(example_lines[-4:]) if example_lines else '无'}"
+                    ),
+                    instructions=(
+                        "判断用户当前这句话是否明显还没说完、值得短暂等待补话。"
+                        "只有起手、列举、转折、悬念引子或句子明显中断时回答 true；"
+                        "完整问题、请求、情绪表达、问候、表情和短回复回答 false。"
+                    ),
+                    true_hint="用户明显还会补充，应等待",
+                    false_hint="消息已经完整，应立即回复",
+                    timeout=0.6,
+                )
+            except Exception as exc:
+                logger.warning("智能防抖 JEV 判断失败,回落小模型: %s", type(exc).__name__)
+                jev_decision = None
         timeout_seconds = max(0.2, min(5.0, _safe_float(_persona_value(self, 'smart_message_debounce_model_timeout_seconds', 0.8), 0.8, 0.2)))
         provider_selector = getattr(self, "_task_provider", None)
         configured_debounce_provider = _persona_value(
@@ -4652,15 +4677,16 @@ class EventDispatchMixin:
         if timeout_override is not None:
             timeout_seconds = float(timeout_override)
         try:
-            raw = await asyncio.wait_for(
-                self._llm_call(
-                    prompt,
-                    max_tokens=80,
-                    provider_id=debounce_provider_id or None,
-                    task="smart_message_debounce",
-                ),
-                timeout=timeout_seconds,
-            ) or ""
+            if jev_decision is None:
+                raw = await asyncio.wait_for(
+                    self._llm_call(
+                        prompt,
+                        max_tokens=80,
+                        provider_id=debounce_provider_id or None,
+                        task="smart_message_debounce",
+                    ),
+                    timeout=timeout_seconds,
+                ) or ""
         except asyncio.TimeoutError:
             logger.warning(
                 "智能防抖模型判断超时,使用启发式: scope=%s sender=%s timeout=%.1fs text=%s",
@@ -4673,9 +4699,15 @@ class EventDispatchMixin:
         except Exception as exc:
             logger.warning("智能防抖模型判断失败,使用启发式: %s", _single_line(exc, 120))
             model_error = _single_line(exc, 120)
-        decision, confidence, reason = self._parse_smart_message_debounce_decision(raw)
-        source = "model" if raw else "heuristic"
-        if not raw and self._smart_message_debounce_heuristic_incomplete(cleaned):
+        if jev_decision is None:
+            decision, confidence, reason = self._parse_smart_message_debounce_decision(raw)
+            source = "model" if raw else "heuristic"
+        else:
+            decision = "incomplete" if jev_decision else "complete"
+            confidence = 0.6
+            reason = "JEV 判定未说完" if jev_decision else "JEV 判定已完整"
+            source = "jev"
+        if jev_decision is None and not raw and self._smart_message_debounce_heuristic_incomplete(cleaned):
             decision, confidence, reason = "incomplete", 0.55, "启发式未说完"
             source = "heuristic"
         if decision != "incomplete":

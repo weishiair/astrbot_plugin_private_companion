@@ -43,6 +43,7 @@ class PageApiRouteBindingTests(unittest.TestCase):
         }
 
         self.assertIn(("/overview", ("GET",)), by_route)
+        self.assertIn(("/jev/probe", ("POST",)), by_route)
         self.assertIn(("/qzone/post", ("GET",)), by_route)
         self.assertIn(("/qzone/post", ("POST",)), by_route)
         self.assertIn(("/bookshelf/unlock", ("POST",)), by_route)
@@ -56,9 +57,11 @@ class PageApiRouteBindingTests(unittest.TestCase):
         self.assertIn(("/bookshelf/reading_state", ("POST",)), by_route)
 
         overview_handler = inspect.unwrap(by_route[("/overview", ("GET",))][0])
+        jev_probe_handler = inspect.unwrap(by_route[("/jev/probe", ("POST",))][0])
         qzone_get_handler = inspect.unwrap(by_route[("/qzone/post", ("GET",))][0])
         qzone_post_handler = inspect.unwrap(by_route[("/qzone/post", ("POST",))][0])
         self.assertEqual(overview_handler.__name__, "get_overview")
+        self.assertEqual(jev_probe_handler.__name__, "run_jev_probe")
         self.assertEqual(qzone_get_handler.__name__, "get_qzone_detail")
         self.assertEqual(qzone_post_handler.__name__, "publish_qzone_post")
 
@@ -81,6 +84,7 @@ class PageApiRouteBindingTests(unittest.TestCase):
             (route, tuple(methods)) for route, _handler, methods, _description in self.context.calls
         }
         self.assertIn((f"{PAGE_API_PREFIX}/overview", ("GET",)), registered_methods)
+        self.assertIn((f"{PAGE_API_PREFIX}/jev/probe", ("POST",)), registered_methods)
         self.assertIn((f"{PAGE_API_PREFIX}/qzone/post", ("GET",)), registered_methods)
         self.assertIn((f"{PAGE_API_PREFIX}/qzone/post", ("POST",)), registered_methods)
 

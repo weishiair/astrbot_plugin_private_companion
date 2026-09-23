@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+import time
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -24,6 +26,9 @@ from .domains.decision import (
     JevClient,
     JevGate,
     JevResult,
+    TASK_GROUP_QUESTION_REVIEW,
+    TASK_REST_WAKEUP,
+    TASK_SMART_DEBOUNCE,
     WIRED_JEV_TASKS,
     resolve_enabled_tasks,
 )
@@ -33,6 +38,22 @@ logger = logging.getLogger("astrbot_plugin_private_companion.jev")
 # JEV 不是 OpenAI 兼容的聊天补全，但在账本里需要一个稳定的 provider 标识，
 # 这样 Token 页能把它的消耗与模型调用分开显示。
 JEV_PROVIDER_BUDGET_LABEL = "jev:systemone"
+
+_JEV_OPT_IN_TASK_SWITCHES: tuple[tuple[str, str], ...] = (
+    ("enable_jev_smart_message_debounce", TASK_SMART_DEBOUNCE),
+    ("enable_jev_rest_wakeup_judge", TASK_REST_WAKEUP),
+    ("enable_jev_group_question_wakeup_reply_review", TASK_GROUP_QUESTION_REVIEW),
+)
+
+_JEV_PROBE_NEVER = {
+    "status": "never",
+    "source": "",
+    "started_at": 0.0,
+    "finished_at": 0.0,
+    "elapsed_ms": 0,
+    "http_status": 0,
+    "error": "",
+}
 
 
 class _JevUsageShim:
@@ -99,6 +120,39 @@ def _jev_safe_url(value: Any) -> str:
         return text.split("?", 1)[0].split("#", 1)[0][:400]
 
 
+def _jev_safe_error(value: Any, *secrets: Any) -> str:
+    """Return a short diagnostic error with credentials and URL details removed."""
+    text = re.sub(r"[\r\n\t]+", " ", str(value or "")).strip()
+    if not text:
+        return ""
+    for secret in secrets:
+        secret_text = _jev_text(secret)
+        if secret_text:
+            text = text.replace(secret_text, "[redacted]")
+    text = re.sub(
+        r"(?i)(authorization\s*[:=]\s*)(?:bearer\s+)?[^\s,;]+",
+        r"\1[redacted]",
+        text,
+    )
+    text = re.sub(
+        r"(?i)((?:api[_-]?key|token|secret)\s*[:=]\s*)[^\s,;]+",
+        r"\1[redacted]",
+        text,
+    )
+    text = re.sub(
+        r"(?i)\b(?:apikey|vck|abk|sk)_[A-Za-z0-9._-]+",
+        "[redacted]",
+        text,
+    )
+    text = re.sub(
+        r"https?://[^\s<>\"']+",
+        lambda match: _jev_safe_url(match.group(0)),
+        text,
+        flags=re.IGNORECASE,
+    )
+    return text[:240]
+
+
 class JevDecisionMixin:
     """TypeSafe Jev / System One 判定委托。"""
 
@@ -108,6 +162,10 @@ class JevDecisionMixin:
 
     def _jev_settings(self) -> dict[str, Any]:
         """Read JEV settings from the runtime attributes set at config load."""
+        enabled_tasks = resolve_enabled_tasks(getattr(self, "jev_enabled_tasks", None))
+        for setting_name, task in _JEV_OPT_IN_TASK_SWITCHES:
+            if _jev_bool(getattr(self, setting_name, False)) and task not in enabled_tasks:
+                enabled_tasks.append(task)
         return {
             "enabled": _jev_bool(getattr(self, "enable_jev_decision", False)),
             "api_key": _jev_text(getattr(self, "jev_api_key", "")),
@@ -116,7 +174,7 @@ class JevDecisionMixin:
             "model": _jev_text(getattr(self, "jev_model", "")),
             "timeout": _jev_float(getattr(self, "jev_timeout_seconds", 1.6), 1.6, 0.15, 30.0),
             "concurrency": _jev_int(getattr(self, "jev_max_concurrency", 4), 4, 1, 32),
-            "enabled_tasks": getattr(self, "jev_enabled_tasks", None),
+            "enabled_tasks": enabled_tasks,
             "threshold_overrides": getattr(self, "jev_threshold_overrides", ""),
             "fail_threshold": _jev_int(getattr(self, "jev_fail_threshold", 3), 3, 1, 50),
             "fail_open_seconds": _jev_float(getattr(self, "jev_fail_open_seconds", 90.0), 90.0, 1.0, 3600.0),
@@ -145,6 +203,8 @@ class JevDecisionMixin:
             self._jev_warmed = False
             self._jev_warmup_attempted = False
             self._jev_warmup_task = None
+            self._jev_probe_task = None
+            self._jev_last_probe = dict(_JEV_PROBE_NEVER)
         else:
             gate.client.reconfigure(
                 api_key=settings["api_key"],
@@ -171,13 +231,16 @@ class JevDecisionMixin:
         Called after config load and on every config save; the pooled HTTP
         connection is kept unless the endpoint target actually changed.
         """
-        task = getattr(self, "_jev_warmup_task", None)
-        if isinstance(task, asyncio.Task) and not task.done():
-            task.cancel()
+        self._jev_config_generation = int(getattr(self, "_jev_config_generation", 0)) + 1
+        for name in ("_jev_warmup_task", "_jev_probe_task"):
+            task = getattr(self, name, None)
+            if isinstance(task, asyncio.Task) and not task.done():
+                task.cancel()
+            setattr(self, name, None)
         self._jev_warmup_task = None
         self._jev_warmed = False
         self._jev_warmup_attempted = False
-        self._jev_config_generation = int(getattr(self, "_jev_config_generation", 0)) + 1
+        self._jev_last_probe = dict(_JEV_PROBE_NEVER)
         gate = self._jev_gate()
         if bool(getattr(self, "_jev_runtime_ready", False)):
             self._jev_ensure_warm(gate)
@@ -199,6 +262,12 @@ class JevDecisionMixin:
         if bool(getattr(self, "_jev_count_toward_limit", True)):
             try:
                 if int(self._llm_daily_budget_remaining()) == 0:
+                    self._jev_last_probe = {
+                        **_JEV_PROBE_NEVER,
+                        "status": "skipped_budget",
+                        "source": "warmup",
+                        "finished_at": round(time.time(), 3),
+                    }
                     return True
             except Exception:
                 pass
@@ -223,35 +292,178 @@ class JevDecisionMixin:
             # Bootstrap may run before an event loop exists. The post-runtime
             # hook retries, and an async decision can retry as a final fallback.
             self._jev_warmup_attempted = False
+            self._jev_last_probe = {
+                **_JEV_PROBE_NEVER,
+                "status": "deferred_no_loop",
+                "source": "warmup",
+                "finished_at": round(time.time(), 3),
+            }
             return True
 
     async def _jev_warm_task(self, gate: JevGate, generation: int) -> None:
+        await self._jev_execute_probe(gate, source="warmup", generation=generation)
+
+    def _jev_probe_snapshot(self) -> dict[str, Any]:
+        snapshot = getattr(self, "_jev_last_probe", None)
+        if not isinstance(snapshot, dict):
+            snapshot = _JEV_PROBE_NEVER
+        return {
+            "status": _jev_text(snapshot.get("status")) or "never",
+            "source": _jev_text(snapshot.get("source")),
+            "started_at": float(snapshot.get("started_at", 0.0) or 0.0),
+            "finished_at": float(snapshot.get("finished_at", 0.0) or 0.0),
+            "elapsed_ms": max(0, int(snapshot.get("elapsed_ms", 0) or 0)),
+            "http_status": max(0, int(snapshot.get("http_status", 0) or 0)),
+            "error": _jev_safe_error(
+                snapshot.get("error"),
+                self._jev_settings().get("api_key", ""),
+            ),
+        }
+
+    async def _jev_execute_probe(
+        self,
+        gate: JevGate,
+        *,
+        source: str,
+        generation: int,
+    ) -> JevResult | None:
+        started_wall = time.time()
+        started_perf = time.perf_counter()
+        if generation == int(getattr(self, "_jev_config_generation", 0)):
+            self._jev_last_probe = {
+                **_JEV_PROBE_NEVER,
+                "status": "running",
+                "source": source,
+                "started_at": round(started_wall, 3),
+            }
         try:
             result = await gate.client.warmup()
             gate.record_result_usage(
-                "warmup",
-                "JEV connection warmup",
+                "warmup" if source == "warmup" else "manual_probe",
+                "JEV connection warmup" if source == "warmup" else "JEV manual connectivity probe",
                 result,
             )
             if generation == int(getattr(self, "_jev_config_generation", 0)):
                 self._jev_warmed = bool(result.ok)
+                self._jev_last_probe = {
+                    "status": "ok" if result.ok else "failed",
+                    "source": source,
+                    "started_at": round(started_wall, 3),
+                    "finished_at": round(time.time(), 3),
+                    "elapsed_ms": max(
+                        0,
+                        int(result.elapsed_ms or (time.perf_counter() - started_perf) * 1000),
+                    ),
+                    "http_status": max(0, int(result.status or 0)),
+                    "error": _jev_safe_error(
+                        result.error,
+                        self._jev_settings().get("api_key", ""),
+                    ),
+                }
+            return result
         except asyncio.CancelledError:
+            if generation == int(getattr(self, "_jev_config_generation", 0)):
+                self._jev_last_probe = {
+                    "status": "cancelled",
+                    "source": source,
+                    "started_at": round(started_wall, 3),
+                    "finished_at": round(time.time(), 3),
+                    "elapsed_ms": max(0, int((time.perf_counter() - started_perf) * 1000)),
+                    "http_status": 0,
+                    "error": "",
+                }
             raise
         except Exception as exc:
-            logger.debug("Jev warmup skipped: %s", exc)
+            safe_error = _jev_safe_error(exc, self._jev_settings().get("api_key", ""))
+            if generation == int(getattr(self, "_jev_config_generation", 0)):
+                self._jev_warmed = False
+                self._jev_last_probe = {
+                    "status": "failed",
+                    "source": source,
+                    "started_at": round(started_wall, 3),
+                    "finished_at": round(time.time(), 3),
+                    "elapsed_ms": max(0, int((time.perf_counter() - started_perf) * 1000)),
+                    "http_status": 0,
+                    "error": safe_error,
+                }
+            logger.debug("Jev %s failed: %s", source, safe_error)
+            return None
+
+    async def jev_probe(self) -> dict[str, Any]:
+        """Run or reuse one explicit low-cost connectivity probe.
+
+        A configured key may be tested even when the master decision switch is
+        off. The call still honours the plugin's hard daily token limit and
+        never returns an answer, credential, raw response, or full URL.
+        """
+        gate = self._jev_gate()
+        settings = self._jev_settings()
+        if not gate.client.is_configured:
+            self._jev_last_probe = {
+                **_JEV_PROBE_NEVER,
+                "status": "failed",
+                "source": "manual",
+                "finished_at": round(time.time(), 3),
+                "error": "not_configured",
+            }
+            return self._jev_probe_snapshot()
+        if settings["count_toward_limit"]:
+            try:
+                if int(self._llm_daily_budget_remaining()) == 0:
+                    self._jev_last_probe = {
+                        **_JEV_PROBE_NEVER,
+                        "status": "skipped_budget",
+                        "source": "manual",
+                        "finished_at": round(time.time(), 3),
+                    }
+                    return self._jev_probe_snapshot()
+            except Exception:
+                pass
+
+        for name in ("_jev_warmup_task", "_jev_probe_task"):
+            task = getattr(self, name, None)
+            if isinstance(task, asyncio.Task) and not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    if not task.cancelled():
+                        raise
+                return self._jev_probe_snapshot()
+
+        generation = int(getattr(self, "_jev_config_generation", 0))
+        task = asyncio.create_task(
+            self._jev_execute_probe(gate, source="manual", generation=generation),
+            name="private-companion-jev-manual-probe",
+        )
+        self._jev_probe_task = task
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if not task.cancelled():
+                raise
+        finally:
+            if getattr(self, "_jev_probe_task", None) is task and task.done():
+                self._jev_probe_task = None
+        return self._jev_probe_snapshot()
 
     async def aclose_jev(self) -> None:
         """Release the pooled connection; called on plugin unload."""
-        warmup = getattr(self, "_jev_warmup_task", None)
-        if isinstance(warmup, asyncio.Task) and not warmup.done():
-            warmup.cancel()
+        tasks: list[asyncio.Task[Any]] = []
+        for name in ("_jev_warmup_task", "_jev_probe_task"):
+            task = getattr(self, name, None)
+            if isinstance(task, asyncio.Task) and task not in tasks:
+                tasks.append(task)
+                if not task.done():
+                    task.cancel()
+        for task in tasks:
             try:
-                await warmup
+                await task
             except asyncio.CancelledError:
                 pass
             except Exception:
                 pass
         self._jev_warmup_task = None
+        self._jev_probe_task = None
         gate = getattr(self, "_jev_gate_obj", None)
         if gate is not None:
             try:
@@ -390,7 +602,13 @@ class JevDecisionMixin:
         completion = (
             f"answer={str(answer.value)[:120]}"
             if answer is not None
-            else f"error={str(result.error or 'no_answer')[:120]}"
+            else "error=" + (
+                _jev_safe_error(
+                    result.error or "no_answer",
+                    self._jev_settings().get("api_key", ""),
+                )
+                or "no_answer"
+            )[:120]
         )
         try:
             recorder(
@@ -421,7 +639,9 @@ class JevDecisionMixin:
             "model": settings["model"],
             "timeout_seconds": settings["timeout"],
             "warmed": bool(getattr(self, "_jev_warmed", False)),
+            "warmup_attempted": bool(getattr(self, "_jev_warmup_attempted", False)),
             "warmup_in_progress": isinstance(warmup, asyncio.Task) and not warmup.done(),
+            "last_probe": self._jev_probe_snapshot(),
             "enabled_tasks": [task for task in configured_tasks if task in wired],
             "wired_tasks": list(WIRED_JEV_TASKS),
             "configured_unwired_tasks": [task for task in configured_tasks if task not in wired],
@@ -431,8 +651,25 @@ class JevDecisionMixin:
             payload["note"] = "尚未初始化；首次判定或预热后可用。"
             return payload
         payload["active"] = bool(gate.master_enabled and gate.client.is_configured)
-        payload.update(gate.stats())
-        payload["recent"] = gate.recent_audit(10)
+        stats = gate.stats()
+        breaker = stats.get("breaker")
+        if isinstance(breaker, dict):
+            breaker = dict(breaker)
+            breaker["last_error"] = _jev_safe_error(
+                breaker.get("last_error"),
+                settings["api_key"],
+            )
+            stats["breaker"] = breaker
+        payload.update(stats)
+        recent: list[dict[str, Any]] = []
+        for entry in gate.recent_audit(10):
+            safe_entry = dict(entry)
+            safe_entry["reason"] = _jev_safe_error(
+                safe_entry.get("reason"),
+                settings["api_key"],
+            )
+            recent.append(safe_entry)
+        payload["recent"] = recent
         return payload
 
 
